@@ -11,19 +11,19 @@ crons = ["*/15 * * * *"]
 binding = "DB"
 database_name = "mtf-db"
 # Nach `wrangler d1 create mtf-db` die echte ID hier eintragen:
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "54b719c7-cc31-4e5d-84c8-43a9bc8889da"
 
 [vars]
 # Origin der GitHub-Pages-Seite, z.B. "https://DEINNAME.github.io"
-SITE_ORIGIN = "http://localhost:5173"
+SITE_ORIGIN = "https://buchungen.oil1i.de"
 # Vollständige URL der Seite inkl. Pfad, z.B. "https://DEINNAME.github.io/mtf-webseite/"
-SITE_URL = "http://localhost:5173/"
-MAIL_FROM = "MTF-Buchung <onboarding@resend.dev>"
-TELEGRAM_BOT_USERNAME = ""
-VAPID_SUBJECT = "mailto:admin@example.com"
-VAPID_PUBLIC_KEY = ""
+SITE_URL = "https://buchungen.oil1i.de"
+MAIL_FROM = "MTF-Buchung buchungen.ff-horst-eiberg@pm.me"
+TELEGRAM_BOT_USERNAME = "MtfHorstEibergBot"
+VAPID_SUBJECT = "mailto:buchungen.oil1i.de-m.repaint356@passmail.net"
+VAPID_PUBLIC_KEY = "BLaq7ek7pQNiYXRyfGa9Zo98EMZKn7U-awhrzIpACD64mFaNXW3bKXwbl9fy9ct57y9_18j9bYsCLY22v1kJ4cg"
 # Nur für lokale Entwicklung: Magic-Link-Token in der API-Antwort zurückgeben statt E-Mail zu senden
-DEV_MODE = "1"
+DEV_MODE = "0"
 
 # Secrets (per `wrangler secret put NAME` setzen, nicht hier eintragen):
 #   MASTER_PASSWORD           – Master-Passwort für den Verwaltungszugang (#/master, nur Konten anlegen)

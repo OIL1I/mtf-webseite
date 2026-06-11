@@ -12,5 +12,8 @@
     "dev:worker": "npm run dev --workspace worker",
     "build": "npm run build --workspace web",
     "check": "npm run check --workspace web && npm run check --workspace worker"
+  },
+  "dependencies": {
+    "vapid": "^0.7.4"
   }
 }
