@@ -1,0 +1,224 @@
+:root,
+html[data-theme='light'] {
+  --bg: #f5f4f1;
+  --surface: #ffffff;
+  --surface-2: #f1efe9;
+  --text: #1c1c1a;
+  --muted: #6b6a66;
+  --faint: #97958f;
+  --border: #e3e1db;
+  --accent: #a32d2d;
+  --accent-strong: #8a2424;
+  --accent-contrast: #ffffff;
+  --accent-soft: #fcebeb;
+  --accent-soft-text: #791f1f;
+  --warning-soft: #faeeda;
+  --warning-text: #854f0b;
+  --success-soft: #eaf3de;
+  --success-text: #3b6d11;
+  --hatch: repeating-linear-gradient(135deg, transparent 0 6px, rgba(0, 0, 0, 0.06) 6px 12px);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.07);
+}
+
+html[data-theme='dark'] {
+  --bg: #171615;
+  --surface: #211f1e;
+  --surface-2: #2b2927;
+  --text: #ece9e4;
+  --muted: #a8a49d;
+  --faint: #7c7973;
+  --border: #3b3835;
+  --accent: #e24b4a;
+  --accent-strong: #f06d6c;
+  --accent-contrast: #ffffff;
+  --accent-soft: #41201f;
+  --accent-soft-text: #f0a3a2;
+  --warning-soft: #3b2c10;
+  --warning-text: #fac775;
+  --success-soft: #23351a;
+  --success-text: #b6dd8f;
+  --hatch: repeating-linear-gradient(135deg, transparent 0 6px, rgba(255, 255, 255, 0.06) 6px 12px);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Schmale, themen-passende Scrollbalken (Firefox + Chromium/WebKit) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1 { font-size: 22px; font-weight: 600; margin: 0 0 12px; }
+h2 { font-size: 17px; font-weight: 600; margin: 0 0 10px; }
+h3 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+p { margin: 0 0 10px; }
+a { color: var(--accent); }
+
+input,
+select,
+textarea {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 14px;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Anpassbare Select-Aufklapplisten (Chromium ab v135; andere Browser fallen auf nativ zurück) */
+select,
+::picker(select) {
+  appearance: base-select;
+}
+::picker(select) {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  padding: 4px;
+  margin-top: 4px;
+}
+select option {
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  background: var(--surface);
+  color: var(--text);
+}
+select option:hover,
+select option:focus {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+}
+select option:checked {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+}
+select option::checkmark {
+  display: none;
+}
+select::picker-icon {
+  color: var(--faint);
+}
+
+button {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+button:hover { background: var(--surface-2); }
+button:active { transform: scale(0.98); }
+button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+}
+button.primary:hover { background: var(--accent-strong); }
+
+button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+button.ghost:hover { background: var(--surface-2); color: var(--text); }
+
+button.danger { color: var(--accent); border-color: var(--accent); background: transparent; }
+button.danger:hover { background: var(--accent-soft); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  box-shadow: var(--shadow);
+}
+
+.badge {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.badge.red { background: var(--accent-soft); color: var(--accent-soft-text); }
+.badge.amber { background: var(--warning-soft); color: var(--warning-text); }
+.badge.green { background: var(--success-soft); color: var(--success-text); }
+.badge.gray { background: var(--surface-2); color: var(--muted); }
+
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+
+.note {
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.note.amber { background: var(--warning-soft); color: var(--warning-text); }
+.note.red { background: var(--accent-soft); color: var(--accent-soft-text); }
+.note.green { background: var(--success-soft); color: var(--success-text); }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  body { font-size: 14px; }
+}

@@ -1,0 +1,7 @@
+# Vorlage für worker/.dev.vars – Datei kopieren und Werte anpassen.
+# `wrangler dev` lädt .dev.vars automatisch als Secrets.
+MASTER_PASSWORD=feuerwehr-master
+# RESEND_API_KEY=re_...
+# TELEGRAM_BOT_TOKEN=123456:ABC...
+# TELEGRAM_WEBHOOK_SECRET=zufallswert
+# VAPID_PRIVATE_JWK={"kty":"EC",...}
