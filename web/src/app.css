@@ -42,7 +42,8 @@ html[data-theme='dark'] {
   --success-soft: #23351a;
   --success-text: #b6dd8f;
   --hatch: repeating-linear-gradient(135deg, transparent 0 6px, rgba(255, 255, 255, 0.06) 6px 12px);
-  --slot-off: #131211;
+  /* Im Dunkelmodus heller als die freie (Karten-)Fläche – dunkler wäre kaum sichtbar */
+  --slot-off: #383430;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
