@@ -4,9 +4,10 @@
   import { appData } from '../lib/appdata.svelte';
   import { api, ApiError } from '../lib/api';
   import { estimateReviewCount } from '../lib/review';
-  import { fmtDateShort, fmtTime } from '../lib/time';
+  import { fmtDateShort, fmtTime, parseHM, startOfDay, weekdayIndex } from '../lib/time';
   import SeriesDialog from './SeriesDialog.svelte';
   import DriverSelect from './DriverSelect.svelte';
+  import Toggle from './Toggle.svelte';
   import type { CheckoutProblem } from '../lib/types';
 
   let { vehicleId = 1, onCheckedOut }: { vehicleId?: number; onCheckedOut: () => void } = $props();
@@ -35,6 +36,79 @@
 
   function fmtItem(it: CartItem): string {
     return `${fmtDateShort(it.start)} · ${fmtTime(it.start)}–${fmtTime(it.end)} Uhr`;
+  }
+
+  // --- Feineinstellung: Termin ausklappen, Von/Bis im 15-Minuten-Raster, Ganzer-Tag-Toggle ---
+  const STEP = 15;
+  const startOptions = Array.from({ length: (24 * 60) / STEP }, (_, i) => i * STEP);
+  const endOptions = Array.from({ length: (24 * 60) / STEP }, (_, i) => (i + 1) * STEP);
+
+  let expanded = $state<number | null>(null);
+  /** Merkt sich je Tag den Zeitraum vor dem Einschalten von „Ganzer Tag". */
+  const beforeFullDay = new Map<number, { start: number; end: number }>();
+
+  function fmtMin(m: number): string {
+    return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  }
+
+  function minutesOf(it: CartItem, which: 'start' | 'end'): number {
+    const day = startOfDay(new Date(it.start)).getTime();
+    return Math.round(((which === 'start' ? it.start : it.end) - day) / 60_000);
+  }
+
+  /** Buchbares Fenster des Tages: Öffnungszeiten laut Wochenplan, heute ab der nächsten vollen Stunde. */
+  function dayWindow(it: CartItem): { start: number; end: number } | null {
+    const day = startOfDay(new Date(it.start));
+    let fromMin = 0;
+    let toMin = 24 * 60;
+    const dh = appData.meta?.rules?.weeklyHours[weekdayIndex(day)];
+    if (dh) {
+      if (!dh.enabled) return null;
+      fromMin = parseHM(dh.open);
+      toMin = parseHM(dh.close);
+    }
+    let start = day.getTime() + fromMin * 60_000;
+    const end = day.getTime() + toMin * 60_000;
+    const nextHour = Math.ceil(Date.now() / 3_600_000) * 3_600_000;
+    if (start < nextHour) start = nextHour;
+    return start < end ? { start, end } : null;
+  }
+
+  function isFullDay(it: CartItem): boolean {
+    const win = dayWindow(it);
+    return !!win && it.start === win.start && it.end === win.end;
+  }
+
+  function setFullDay(it: CartItem, on: boolean): void {
+    const win = dayWindow(it);
+    if (!win) return;
+    const dayKey = startOfDay(new Date(it.start)).getTime();
+    if (on) {
+      beforeFullDay.set(dayKey, { start: it.start, end: it.end });
+      cart.updateItem(it, win.start, win.end);
+      expanded = win.start;
+    } else {
+      const prev = beforeFullDay.get(dayKey);
+      const start = prev?.start ?? win.start;
+      const end = prev?.end ?? Math.min(win.start + 3_600_000, win.end);
+      cart.updateItem(it, start, end);
+      expanded = start;
+    }
+  }
+
+  function setTime(it: CartItem, which: 'start' | 'end', minutes: number): void {
+    const day = startOfDay(new Date(it.start)).getTime();
+    let s = it.start;
+    let e = it.end;
+    if (which === 'start') {
+      s = day + minutes * 60_000;
+      if (s >= e) e = Math.min(s + 3_600_000, day + 24 * 3_600_000);
+    } else {
+      e = day + minutes * 60_000;
+      if (e <= s) s = Math.max(e - 3_600_000, day);
+    }
+    cart.updateItem(it, s, e);
+    expanded = s;
   }
 
   async function checkout(): Promise<void> {
@@ -99,19 +173,60 @@
       <ul class="items">
         {#each seriesList as s (s.key)}
           <li class="item series">
-            <div>
-              <strong>↻ {s.label}</strong>
-              <span class="small muted">Serie · {s.count} Termine</span>
+            <div class="item-head">
+              <div class="item-text">
+                <strong>↻ {s.label}</strong>
+                <span class="small muted">Serie · {s.count} Termine</span>
+              </div>
+              <button class="ghost" onclick={() => cart.removeSeries(s.key)} aria-label="Serie entfernen">✕</button>
             </div>
-            <button class="ghost" onclick={() => cart.removeSeries(s.key)} aria-label="Serie entfernen">✕</button>
           </li>
         {/each}
         {#each singles as it (it.start)}
           <li class="item">
-            <div>
-              <strong>{fmtItem(it)}</strong>
+            <div class="item-head">
+              <button
+                class="expand"
+                onclick={() => (expanded = expanded === it.start ? null : it.start)}
+                aria-expanded={expanded === it.start}
+                aria-label="Zeit anpassen"
+              >
+                <strong>{fmtItem(it)}</strong>
+                <span class="chev">{expanded === it.start ? '▾' : '▸'}</span>
+              </button>
+              <button class="ghost" onclick={() => cart.removeItem(it)} aria-label="Termin entfernen">✕</button>
             </div>
-            <button class="ghost" onclick={() => cart.removeItem(it)} aria-label="Termin entfernen">✕</button>
+            {#if expanded === it.start}
+              {@const win = dayWindow(it)}
+              <div class="item-edit">
+                <label class="fullday">
+                  <Toggle
+                    bind:checked={() => isFullDay(it), (v) => setFullDay(it, v)}
+                    label="Ganzer Tag"
+                    disabled={!win}
+                  />
+                  <span>Ganzer Tag</span>
+                </label>
+                {#if isFullDay(it)}
+                  <p class="small muted">
+                    Bucht alle buchbaren Stunden des Tages ({fmtMin(minutesOf(it, 'start'))}–{fmtMin(minutesOf(it, 'end'))} Uhr).
+                  </p>
+                {:else}
+                  <div class="times">
+                    <label>von
+                      <select value={minutesOf(it, 'start')} onchange={(e) => setTime(it, 'start', Number(e.currentTarget.value))}>
+                        {#each startOptions as m (m)}<option value={m}>{fmtMin(m)}</option>{/each}
+                      </select>
+                    </label>
+                    <label>bis
+                      <select value={minutesOf(it, 'end')} onchange={(e) => setTime(it, 'end', Number(e.currentTarget.value))}>
+                        {#each endOptions as m (m)}<option value={m}>{fmtMin(m)}</option>{/each}
+                      </select>
+                    </label>
+                  </div>
+                {/if}
+              </div>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -179,18 +294,45 @@
     overflow-y: auto;
   }
   .item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
     background: var(--surface-2);
     border-radius: var(--radius-sm);
     padding: 6px 10px;
     font-size: 13px;
   }
-  .item div { display: flex; flex-direction: column; min-width: 0; }
+  .item-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .item-text { display: flex; flex-direction: column; min-width: 0; }
   .item strong { font-size: 13px; font-weight: 600; }
   .item.series { background: var(--accent-soft); color: var(--accent-soft-text); }
+  .expand {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .expand .chev { color: var(--faint); font-size: 11px; }
+  .item-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 6px;
+    padding: 8px 0 4px;
+    border-top: 1px dashed var(--border);
+  }
+  .item-edit label { flex-direction: row; align-items: center; gap: 8px; margin-bottom: 0; }
+  .item-edit p { margin: 0; }
+  .times { display: flex; gap: 14px; }
+  .times select { min-width: 84px; }
   label {
     display: flex;
     flex-direction: column;

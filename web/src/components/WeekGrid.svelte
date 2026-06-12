@@ -193,8 +193,8 @@
   }
   .cell:hover { background: var(--accent-soft); }
   .cell.drag-sel { background: var(--accent-soft); outline: 1.5px dashed var(--accent); outline-offset: -2px; }
-  .cell.closed, .cell.past { background: var(--surface-2); opacity: 0.55; cursor: not-allowed; }
-  .cell.closed:hover, .cell.past:hover { background: var(--surface-2); }
+  .cell.closed, .cell.past { background: var(--slot-off); cursor: not-allowed; }
+  .cell.closed:hover, .cell.past:hover { background: var(--slot-off); }
   .blackout {
     position: absolute;
     left: 2px;

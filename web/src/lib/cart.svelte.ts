@@ -162,6 +162,21 @@ class Cart {
     if (this.items.length !== before) this.save();
   }
 
+  /**
+   * Ersetzt einen (ggf. zusammengeführten) Einzeltermin durch einen neuen Zeitraum.
+   * Andere Einzelstunden, die sich mit dem neuen Zeitraum überschneiden, werden absorbiert.
+   */
+  updateItem(item: CartItem, start: number, end: number): void {
+    if (item.seriesKey !== null || end <= start) return;
+    this.items = this.items.filter(
+      (it) =>
+        it.seriesKey !== null ||
+        !((it.start >= item.start && it.end <= item.end) || (it.start < end && start < it.end))
+    );
+    this.items.push({ start, end, seriesKey: null });
+    this.save();
+  }
+
   removeSeries(key: string): void {
     this.items = this.items.filter((it) => it.seriesKey !== key);
     delete this.series[key];

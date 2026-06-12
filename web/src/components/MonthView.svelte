@@ -2,7 +2,7 @@
   import { addDays, fmtDate, fmtTime, sameDay, startOfDay, startOfWeek, WEEKDAYS_SHORT } from '../lib/time';
   import { appData } from '../lib/appdata.svelte';
   import { cart } from '../lib/cart.svelte';
-  import { blackoutBlocksForDay, cellState, visibleHourRange } from '../lib/calendar';
+  import { blackoutBlocksForDay, bookingBlocksForDay, cartBlocksForDay, cellState, visibleHourRange } from '../lib/calendar';
   import type { Booking } from '../lib/types';
 
   let {
@@ -37,24 +37,16 @@
     return cart.items.some((it) => it.start < e && s < it.end);
   }
 
+  const HOUR_H = 34;
+
   const range = $derived(visibleHourRange(appData.meta?.rules, bookings, [selectedDay]));
   const hours = $derived(Array.from({ length: range.to - range.from }, (_, i) => range.from + i));
 
-  function hourInfo(h: number): { kind: string; booking?: Booking; title?: string } {
-    const hStart = startOfDay(selectedDay);
-    hStart.setHours(h);
-    const hEnd = startOfDay(selectedDay);
-    hEnd.setHours(h + 1);
-    const booking = bookings.find(
-      (b) => Date.parse(b.start) < hEnd.getTime() && hStart.getTime() < Date.parse(b.end) && sameDay(new Date(b.start), selectedDay)
-    );
-    if (booking) return { kind: booking.mine ? 'mine' : booking.status === 'pending' ? 'pending' : 'other', booking };
-    const blk = blackoutBlocksForDay(appData.meta?.blackouts ?? [], selectedDay).find(
-      (b) => b.topH < h + 1 && h < b.topH + b.heightH
-    );
-    if (blk) return { kind: 'blackout', title: blk.title };
-    if (cart.has(selectedDay, h)) return { kind: 'cart' };
-    return { kind: cellState(selectedDay, h, appData.meta?.rules) };
+  // Wie in WeekGrid: zusammenhängende Zeiträume werden als ein Block über das Stundenraster gelegt.
+  function blockStyle(topH: number, heightH: number): string {
+    const top = (Math.max(topH, range.from) - range.from) * HOUR_H;
+    const height = (Math.min(topH + heightH, range.to) - Math.max(topH, range.from)) * HOUR_H;
+    return `top:${top + 1}px;height:${Math.max(height - 3, 12)}px;`;
   }
 </script>
 
@@ -88,21 +80,12 @@
 
   <div class="card detail">
     <h3>{fmtDate(selectedDay)}</h3>
-    <div class="hours">
+    <div class="hours" style={`height:${hours.length * HOUR_H}px`}>
       {#each hours as h (h)}
-        {@const info = hourInfo(h)}
-        <div class="hour-row">
+        {@const state = cellState(selectedDay, h, appData.meta?.rules)}
+        <div class="hour-row" style={`top:${(h - range.from) * HOUR_H}px;height:${HOUR_H}px`}>
           <span class="t">{String(h).padStart(2, '0')}:00</span>
-          {#if info.kind === 'mine' || info.kind === 'other' || info.kind === 'pending'}
-            <button class={'slot booked ' + info.kind} onclick={() => info.booking && onBookingClick(info.booking)}>
-              <strong>{info.booking?.purpose}</strong>
-              <span>{info.booking?.mine ? 'du' : info.booking?.userName}{info.kind === 'pending' ? ' · wartet auf Freigabe' : ''}</span>
-            </button>
-          {:else if info.kind === 'blackout'}
-            <div class="slot blackout">Gesperrt: {info.title}</div>
-          {:else if info.kind === 'cart'}
-            <button class="slot cart" onclick={() => cart.toggleHour(selectedDay, h, vehicleId)}>Im Korb · tippen zum Entfernen</button>
-          {:else if info.kind === 'free'}
+          {#if state === 'free'}
             <button class="slot free" onclick={() => cart.toggleHour(selectedDay, h, vehicleId)} aria-label={`${h}:00 Uhr in den Korb legen`}>
               <span class="plus">+</span>
             </button>
@@ -111,6 +94,35 @@
           {/if}
         </div>
       {/each}
+
+      <div class="lane">
+        {#each blackoutBlocksForDay(appData.meta?.blackouts ?? [], selectedDay) as blk (blk.title + blk.topH)}
+          <div class="block blackout" style={blockStyle(blk.topH, blk.heightH)} title={`Gesperrt: ${blk.title}`}>
+            <strong>Gesperrt: {blk.title}</strong>
+          </div>
+        {/each}
+
+        {#each bookingBlocksForDay(bookings, selectedDay) as blk (blk.booking.id)}
+          <button
+            class={'block ' + (blk.booking.mine ? 'mine' : blk.booking.status === 'pending' ? 'pending' : 'other')}
+            style={blockStyle(blk.topH, blk.heightH)}
+            onclick={() => onBookingClick(blk.booking)}
+            title={`${blk.booking.purpose} – ${blk.booking.userName}`}
+          >
+            <strong>{blk.booking.purpose}</strong>
+            <span>
+              {fmtTime(blk.booking.start)}–{fmtTime(blk.booking.end)} · {blk.booking.mine ? 'du' : blk.booking.userName}{blk.booking.status === 'pending' ? ' · wartet auf Freigabe' : ''}
+            </span>
+          </button>
+        {/each}
+
+        {#each cartBlocksForDay(cart.merged, selectedDay) as blk (blk.item.start)}
+          <button class="block cart" style={blockStyle(blk.topH, blk.heightH)} onclick={() => cart.removeItem(blk.item)} title="Aus dem Warenkorb entfernen">
+            <strong>Im Korb</strong>
+            <span>{fmtTime(blk.item.start)}–{fmtTime(blk.item.end)} · tippen zum Entfernen</span>
+          </button>
+        {/each}
+      </div>
     </div>
     {#if dayBookings(selectedDay).length > 0}
       <p class="small muted booked-note">
@@ -188,38 +200,62 @@
   .legend .dot { vertical-align: 1px; margin-right: 3px; }
 
   .detail h3 { margin-bottom: 10px; }
-  .hours { display: flex; flex-direction: column; }
+  .hours { position: relative; }
   .hour-row {
+    position: absolute;
+    left: 0;
+    right: 0;
     display: flex;
     align-items: stretch;
     gap: 8px;
     border-top: 1px solid var(--border);
-    min-height: 34px;
   }
   .t { width: 44px; font-size: 11px; color: var(--faint); padding-top: 2px; text-align: right; }
   .slot {
     flex: 1;
     margin: 2px 0;
     border-radius: 6px;
-    font-size: 12px;
-    text-align: left;
-    padding: 3px 8px;
     border: none;
+    display: flex;
+    align-items: center;
+  }
+  .slot.free { background: transparent; cursor: pointer; }
+  .slot.free .plus { opacity: 0; color: var(--accent); font-weight: 600; margin: 0 auto; }
+  .slot.free:hover { background: var(--accent-soft); }
+  .slot.free:hover .plus { opacity: 1; }
+  .slot.off { background: var(--slot-off); }
+
+  /* Zusammenhängende Zeiträume liegen als ein Block über dem Raster (wie in der Wochenansicht) */
+  .lane {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 52px; /* Breite der Uhrzeit-Spalte (44px) + Lücke (8px) */
+    right: 0;
+    pointer-events: none;
+  }
+  .lane > * { pointer-events: auto; }
+  .block {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 12px;
+    line-height: 1.3;
+    text-align: left;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     justify-content: center;
+    cursor: pointer;
   }
-  .slot strong { font-size: 12px; }
-  .slot span { font-size: 11px; opacity: 0.8; }
-  .slot.free { background: transparent; cursor: pointer; align-items: center; flex-direction: row; }
-  .slot.free .plus { opacity: 0; color: var(--accent); font-weight: 600; }
-  .slot.free:hover { background: var(--accent-soft); }
-  .slot.free:hover .plus { opacity: 1; }
-  .slot.off { background: var(--surface-2); opacity: 0.5; }
-  .slot.booked.mine { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent-soft-text); cursor: pointer; }
-  .slot.booked.other { background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); cursor: pointer; }
-  .slot.booked.pending { background: var(--warning-soft); border: 1px solid var(--warning-text); color: var(--warning-text); cursor: pointer; }
-  .slot.cart { border: 2px dashed var(--accent); color: var(--accent); background: transparent; cursor: pointer; }
-  .slot.blackout { background: var(--surface-2); background-image: var(--hatch); color: var(--muted); }
+  .block strong { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .block span { font-size: 11px; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .block.mine { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent-soft-text); }
+  .block.other { background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); }
+  .block.pending { background: var(--warning-soft); border: 1px solid var(--warning-text); color: var(--warning-text); }
+  .block.cart { background: var(--bg); border: 2px dashed var(--accent); color: var(--accent); }
+  .block.blackout { background: var(--surface-2); background-image: var(--hatch); border: 1px solid var(--border); color: var(--muted); cursor: not-allowed; }
   .booked-note { margin-top: 8px; }
 </style>
