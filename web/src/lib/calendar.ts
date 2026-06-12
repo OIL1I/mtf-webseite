@@ -1,5 +1,5 @@
 import { addDays, parseHM, startOfDay, weekdayIndex } from './time';
-import type { Blackout, Booking, Rules } from './types';
+import { intervalOccursOnUtcDay, type Blackout, type Booking, type Rules } from './types';
 import type { CartItem } from './cart.svelte';
 
 export interface DayBlock {
@@ -40,6 +40,11 @@ export function blackoutBlocksForDay(blackouts: Blackout[], day: Date): (DayBloc
   for (const b of blackouts) {
     if (b.kind === 'weekly' && b.weekday !== null && b.start_time && b.end_time) {
       if (weekdayIndex(day) === b.weekday) {
+        out.push({ topH: parseHM(b.start_time) / 60, heightH: (parseHM(b.end_time) - parseHM(b.start_time)) / 60, title: b.title });
+      }
+    } else if (b.kind === 'interval' && b.start_time && b.end_time) {
+      // Lokalen Kalendertag als UTC-Mitternacht prüfen – gleiche Rechnung wie im Worker
+      if (intervalOccursOnUtcDay(Date.UTC(day.getFullYear(), day.getMonth(), day.getDate()), b)) {
         out.push({ topH: parseHM(b.start_time) / 60, heightH: (parseHM(b.end_time) - parseHM(b.start_time)) / 60, title: b.title });
       }
     } else if (b.kind === 'once' && b.start_ts && b.end_ts) {

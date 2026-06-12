@@ -66,15 +66,41 @@ export interface Vehicle {
   required_class: string | null;
 }
 
+export type BlackoutUnit = 'day' | 'week' | 'month';
+
 export interface Blackout {
   id: number;
   title: string;
-  kind: 'weekly' | 'once';
+  kind: 'weekly' | 'once' | 'interval';
   weekday: number | null;
   start_time: string | null;
   end_time: string | null;
   start_ts: string | null;
   end_ts: string | null;
+  /** kind='interval': alle N Tage/Wochen/Monate ab anchor_date (JJJJ-MM-TT) */
+  repeat_every: number | null;
+  repeat_unit: BlackoutUnit | null;
+  anchor_date: string | null;
+}
+
+/**
+ * Fällt der lokale Kalendertag (als UTC-Mitternacht in ms) auf eine Wiederholung
+ * der Intervall-Sperrzeit? Monatlich = gleicher Kalendertag; existiert er in einem
+ * Monat nicht (z.B. 31. im Februar), fällt der Termin aus.
+ */
+export function intervalOccursOnUtcDay(dayUtcMs: number, b: Pick<Blackout, 'repeat_every' | 'repeat_unit' | 'anchor_date'>): boolean {
+  if (!b.repeat_every || !b.repeat_unit || !b.anchor_date) return false;
+  const anchorUtcMs = Date.parse(`${b.anchor_date}T00:00:00Z`);
+  if (!Number.isFinite(anchorUtcMs) || dayUtcMs < anchorUtcMs) return false;
+  const n = Math.max(1, Math.floor(b.repeat_every));
+  const dayDiff = Math.round((dayUtcMs - anchorUtcMs) / 86_400_000);
+  if (b.repeat_unit === 'day') return dayDiff % n === 0;
+  if (b.repeat_unit === 'week') return dayDiff % (7 * n) === 0;
+  const d = new Date(dayUtcMs);
+  const a = new Date(anchorUtcMs);
+  if (d.getUTCDate() !== a.getUTCDate()) return false;
+  const months = (d.getUTCFullYear() - a.getUTCFullYear()) * 12 + (d.getUTCMonth() - a.getUTCMonth());
+  return months % n === 0;
 }
 
 export interface Meta {

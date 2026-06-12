@@ -53,13 +53,22 @@
 
   // --- Sperrzeiten ---
   let blkTitle = $state('');
-  let blkKind = $state<'weekly' | 'once'>('weekly');
+  let blkKind = $state<'weekly' | 'once' | 'interval'>('weekly');
   let blkWeekday = $state(0);
   let blkStart = $state('19:00');
   let blkEnd = $state('22:00');
   let blkOnceStart = $state('');
   let blkOnceEnd = $state('');
+  let blkEvery = $state(2);
+  let blkUnit = $state<'day' | 'week' | 'month'>('week');
+  let blkAnchor = $state('');
   let blkError = $state<string | null>(null);
+
+  const UNIT_LABELS: Record<'day' | 'week' | 'month', [string, string]> = {
+    day: ['Tag', 'Tage'],
+    week: ['Woche', 'Wochen'],
+    month: ['Monat', 'Monate'],
+  };
 
   async function addBlackout(): Promise<void> {
     blkError = null;
@@ -67,16 +76,30 @@
       blkError = 'Bitte eine Bezeichnung angeben.';
       return;
     }
+    if (blkKind === 'interval' && !blkAnchor) {
+      blkError = 'Bitte den ersten Termin (Datum) angeben.';
+      return;
+    }
     try {
       const body =
         blkKind === 'weekly'
           ? { title: blkTitle.trim(), kind: 'weekly', weekday: blkWeekday, start_time: blkStart, end_time: blkEnd }
-          : {
-              title: blkTitle.trim(),
-              kind: 'once',
-              start_ts: new Date(blkOnceStart).toISOString(),
-              end_ts: new Date(blkOnceEnd).toISOString(),
-            };
+          : blkKind === 'interval'
+            ? {
+                title: blkTitle.trim(),
+                kind: 'interval',
+                repeat_every: blkEvery,
+                repeat_unit: blkUnit,
+                anchor_date: blkAnchor,
+                start_time: blkStart,
+                end_time: blkEnd,
+              }
+            : {
+                title: blkTitle.trim(),
+                kind: 'once',
+                start_ts: new Date(blkOnceStart).toISOString(),
+                end_ts: new Date(blkOnceEnd).toISOString(),
+              };
       const res = await api<{ blackouts: Blackout[] }>('/api/admin/blackouts', { body });
       if (appData.meta) appData.meta.blackouts = res.blackouts;
       blkTitle = '';
@@ -92,6 +115,12 @@
 
   function fmtBlackout(b: Blackout): string {
     if (b.kind === 'weekly') return `Jeden ${WEEKDAYS_LONG[b.weekday ?? 0]} · ${b.start_time}–${b.end_time} Uhr`;
+    if (b.kind === 'interval') {
+      const n = b.repeat_every ?? 1;
+      const unit = UNIT_LABELS[b.repeat_unit ?? 'week'][n === 1 ? 0 : 1];
+      const ab = b.anchor_date ? new Date(`${b.anchor_date}T00:00:00`).toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }) : '?';
+      return `${n === 1 ? `Jede(n) ${unit}` : `Alle ${n} ${unit}`} ab ${ab} · ${b.start_time}–${b.end_time} Uhr`;
+    }
     const f = (iso: string) => new Date(iso).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     return `Einmalig · ${f(b.start_ts!)} – ${f(b.end_ts!)}`;
   }
@@ -137,6 +166,7 @@
       <div class="row">
         <select bind:value={blkKind}>
           <option value="weekly">wöchentlich</option>
+          <option value="interval">Intervall (alle N …)</option>
           <option value="once">einmalig</option>
         </select>
         {#if blkKind === 'weekly'}
@@ -145,11 +175,28 @@
           </select>
           <input type="time" bind:value={blkStart} />
           <input type="time" bind:value={blkEnd} />
+        {:else if blkKind === 'interval'}
+          <span class="small muted">alle</span>
+          <select bind:value={blkEvery} aria-label="Wiederholung">
+            {#each [1, 2, 3, 4, 5, 6, 8, 10, 12] as n (n)}<option value={n}>{n}</option>{/each}
+          </select>
+          <select bind:value={blkUnit} aria-label="Einheit">
+            <option value="day">Tage</option>
+            <option value="week">Wochen</option>
+            <option value="month">Monate</option>
+          </select>
+          <span class="small muted">ab</span>
+          <input type="date" bind:value={blkAnchor} aria-label="Erster Termin" />
+          <input type="time" bind:value={blkStart} />
+          <input type="time" bind:value={blkEnd} />
         {:else}
           <input type="datetime-local" bind:value={blkOnceStart} aria-label="Beginn" />
           <input type="datetime-local" bind:value={blkOnceEnd} aria-label="Ende" />
         {/if}
       </div>
+      {#if blkKind === 'interval'}
+        <p class="small muted">Der erste Termin bestimmt den Rhythmus, z. B. „alle 2 Wochen ab Mo 15.06." = Übungsdienst jede zweite Woche. Der Wochentag ergibt sich aus dem Datum.</p>
+      {/if}
       {#if blkError}<div class="note red">{blkError}</div>{/if}
       <button onclick={addBlackout}>+ Sperrzeit hinzufügen</button>
     </div>

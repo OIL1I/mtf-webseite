@@ -29,7 +29,7 @@ import {
   saveFeatures,
   saveRules,
 } from './db';
-import { canUserCancel, fmtRange, validateCheckout } from './rules';
+import { canUserCancel, fmtRange, parseHM, validateCheckout } from './rules';
 import { emailLayout, sendEmail } from './email';
 import {
   escapeHtml,
@@ -793,14 +793,32 @@ app.put('/api/admin/settings', managerOnly, async (c) => {
 app.post('/api/admin/blackouts', managerOnly, async (c) => {
   const body = await readJson<Partial<Blackout>>(c);
   if (!body?.title || !body.kind) return c.json({ error: 'title und kind erforderlich' }, 400);
+  if (body.kind !== 'weekly' && body.kind !== 'once' && body.kind !== 'interval') {
+    return c.json({ error: 'Unbekannte Art von Sperrzeit' }, 400);
+  }
   if (body.kind === 'weekly' && (body.weekday == null || !body.start_time || !body.end_time)) {
     return c.json({ error: 'weekday, start_time, end_time erforderlich' }, 400);
   }
   if (body.kind === 'once' && (!body.start_ts || !body.end_ts)) {
     return c.json({ error: 'start_ts und end_ts erforderlich' }, 400);
   }
+  if (body.kind === 'interval') {
+    const every = Number(body.repeat_every);
+    if (!Number.isInteger(every) || every < 1 || every > 99) {
+      return c.json({ error: 'Wiederholung: Zahl zwischen 1 und 99 erforderlich' }, 400);
+    }
+    if (body.repeat_unit !== 'day' && body.repeat_unit !== 'week' && body.repeat_unit !== 'month') {
+      return c.json({ error: 'Einheit muss Tag, Woche oder Monat sein' }, 400);
+    }
+    if (!body.anchor_date || !/^\d{4}-\d{2}-\d{2}$/.test(body.anchor_date)) {
+      return c.json({ error: 'Erster Termin (Datum) erforderlich' }, 400);
+    }
+    if (!body.start_time || !body.end_time || parseHM(body.start_time) >= parseHM(body.end_time)) {
+      return c.json({ error: 'Zeitfenster (von vor bis) erforderlich' }, 400);
+    }
+  }
   await c.env.DB.prepare(
-    'INSERT INTO blackouts (title, kind, weekday, start_time, end_time, start_ts, end_ts) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO blackouts (title, kind, weekday, start_time, end_time, start_ts, end_ts, repeat_every, repeat_unit, anchor_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   )
     .bind(
       body.title,
@@ -809,7 +827,10 @@ app.post('/api/admin/blackouts', managerOnly, async (c) => {
       body.start_time ?? null,
       body.end_time ?? null,
       body.start_ts ? new Date(body.start_ts).toISOString() : null,
-      body.end_ts ? new Date(body.end_ts).toISOString() : null
+      body.end_ts ? new Date(body.end_ts).toISOString() : null,
+      body.kind === 'interval' ? Number(body.repeat_every) : null,
+      body.kind === 'interval' ? body.repeat_unit : null,
+      body.kind === 'interval' ? body.anchor_date : null
     )
     .run();
   await audit(c.env.DB, c.get('user').name, 'Sperrzeit angelegt', `„${body.title}" (${body.kind})`);
@@ -1251,13 +1272,17 @@ app.post('/api/groups/:id/comments', async (c) => {
     .first<{ user_id: number; purpose: string; email: string; name: string }>();
   if (!group || (group.user_id !== user.id && user.role !== 'manager')) return c.json({ error: 'Nicht gefunden' }, 404);
   await c.env.DB.prepare('INSERT INTO comments (group_id, user_id, text) VALUES (?, ?, ?)').bind(groupId, user.id, text).run();
-  if (user.id === group.user_id) {
-    c.executionCtx.waitUntil(notifyCommentToManagers(c.env, user.name, group.purpose, text, groupId));
-  } else {
+  const isOwner = user.id === group.user_id;
+  // Buchende Person informieren (außer sie hat selbst geschrieben) …
+  if (!isOwner) {
     c.executionCtx.waitUntil(
       notifyCommentToUser(c.env, { id: group.user_id, email: group.email, name: group.name }, user.name, group.purpose, text)
     );
   }
+  // … und alle Admins außer der Person, die geschrieben hat — Antworten klar als Antwort gekennzeichnet
+  c.executionCtx.waitUntil(
+    notifyCommentToManagers(c.env, user.name, group.purpose, text, groupId, { exceptUserId: user.id, isAnswer: !isOwner })
+  );
   return c.json({ ok: true });
 });
 

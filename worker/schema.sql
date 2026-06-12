@@ -64,12 +64,16 @@ CREATE INDEX IF NOT EXISTS idx_bookings_group ON bookings (group_id);
 CREATE TABLE IF NOT EXISTS blackouts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('weekly', 'once')),
+  kind TEXT NOT NULL CHECK (kind IN ('weekly', 'once', 'interval')),
   weekday INTEGER,
   start_time TEXT,
   end_time TEXT,
   start_ts TEXT,
-  end_ts TEXT
+  end_ts TEXT,
+  -- kind='interval': alle N Tage/Wochen/Monate ab anchor_date (JJJJ-MM-TT), Fenster start_time–end_time
+  repeat_every INTEGER,
+  repeat_unit TEXT CHECK (repeat_unit IN ('day', 'week', 'month') OR repeat_unit IS NULL),
+  anchor_date TEXT
 );
 
 CREATE TABLE IF NOT EXISTS settings (

@@ -1,4 +1,4 @@
-import type { Blackout, BookingRow, CheckoutItem, Rules } from './types';
+import { intervalOccursOnUtcDay, type Blackout, type BookingRow, type CheckoutItem, type Rules } from './types';
 
 export const TZ = 'Europe/Berlin';
 
@@ -98,6 +98,20 @@ function blackoutHits(item: { startMs: number; endMs: number; start: string; end
         const lp = localParts(new Date(t));
         const segMin = Math.min(60, (item.endMs - t) / 60_000);
         if (lp.weekday === b.weekday && overlaps(lp.minutes, lp.minutes + segMin, bStart, bEnd)) return b;
+      }
+    } else if (b.kind === 'interval' && b.start_time && b.end_time) {
+      // Wie weekly, nur dass der lokale Kalendertag auf das Wiederholungsraster fallen muss
+      const bStart = parseHM(b.start_time);
+      const bEnd = parseHM(b.end_time);
+      for (let t = item.startMs; t < item.endMs; t += 3_600_000) {
+        const lp = localParts(new Date(t));
+        const segMin = Math.min(60, (item.endMs - t) / 60_000);
+        if (
+          intervalOccursOnUtcDay(Date.parse(`${lp.ymd}T00:00:00Z`), b) &&
+          overlaps(lp.minutes, lp.minutes + segMin, bStart, bEnd)
+        ) {
+          return b;
+        }
       }
     }
   }

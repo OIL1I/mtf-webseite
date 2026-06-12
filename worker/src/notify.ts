@@ -245,20 +245,29 @@ export async function notifyWaitlistFree(
   );
 }
 
-export async function notifyCommentToManagers(env: Env, fromName: string, purpose: string, text: string, groupId: number): Promise<void> {
+export async function notifyCommentToManagers(
+  env: Env,
+  fromName: string,
+  purpose: string,
+  text: string,
+  groupId: number,
+  opts: { exceptUserId?: number; isAnswer?: boolean } = {}
+): Promise<void> {
+  const except = opts.exceptUserId ?? -1;
+  const tgText = opts.isAnswer
+    ? `💬 <b>Antwort von ${escapeHtml(fromName)} zu „${escapeHtml(purpose)}"</b>\n${escapeHtml(text)}`
+    : `💬 <b>Rückfrage zu „${escapeHtml(purpose)}"</b>\nVon ${escapeHtml(fromName)}:\n${escapeHtml(text)}`;
   const { results } = await env.DB.prepare(
-    `SELECT t.chat_id FROM telegram_links t JOIN users u ON u.id = t.user_id WHERE u.role = 'manager' AND u.disabled = 0`
-  ).all<{ chat_id: string }>();
+    `SELECT t.chat_id FROM telegram_links t JOIN users u ON u.id = t.user_id WHERE u.role = 'manager' AND u.disabled = 0 AND u.id != ?`
+  )
+    .bind(except)
+    .all<{ chat_id: string }>();
   for (const chat of results) {
-    await tg(env, 'sendMessage', {
-      chat_id: chat.chat_id,
-      text: `💬 <b>Rückfrage zu „${escapeHtml(purpose)}"</b>\nVon ${escapeHtml(fromName)}:\n${escapeHtml(text)}`,
-      parse_mode: 'HTML',
-    });
+    await tg(env, 'sendMessage', { chat_id: chat.chat_id, text: tgText, parse_mode: 'HTML' });
   }
-  const ids = await managerIds(env);
+  const ids = (await managerIds(env)).filter((id) => id !== except);
   await pushToUsers(env, ids, {
-    title: `Rückfrage: ${purpose}`,
+    title: opts.isAnswer ? `Antwort von ${fromName}: ${purpose}` : `Rückfrage: ${purpose}`,
     body: `${fromName}: ${text.slice(0, 120)}`,
     url: `${env.SITE_URL}#/verwaltung`,
     tag: `comment-${groupId}`,
