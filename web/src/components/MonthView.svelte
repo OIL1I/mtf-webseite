@@ -25,7 +25,7 @@
   function dots(day: Date): string[] {
     const list = dayBookings(day);
     const out: string[] = [];
-    if (list.some((b) => b.mine)) out.push('mine');
+    if (list.some((b) => b.mine && b.status === 'confirmed')) out.push('mine');
     if (list.some((b) => !b.mine && b.status === 'confirmed')) out.push('other');
     if (list.some((b) => b.status === 'pending')) out.push('pending');
     return out;
@@ -149,7 +149,7 @@
 
         {#each bookingBlocksForDay(bookings, selectedDay) as blk (blk.booking.id)}
           <button
-            class={'block ' + (blk.booking.mine ? 'mine' : blk.booking.status === 'pending' ? 'pending' : 'other')}
+            class={'block ' + (blk.booking.status === 'pending' ? 'pending' : blk.booking.mine ? 'mine' : 'other')}
             style={blockStyle(blk.topH, blk.heightH)}
             onclick={() => onBookingClick(blk.booking)}
             title={`${blk.booking.purpose} – ${blk.booking.userName}`}
@@ -299,7 +299,7 @@
   .block strong { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .block span { font-size: 11px; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .block.mine { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent-soft-text); }
-  .block.other { background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); }
+  .block.other { background: var(--surface-2); background-image: var(--hatch-busy); border: 1px solid var(--border); color: var(--muted); }
   .block.pending { background: var(--warning-soft); border: 1px solid var(--warning-text); color: var(--warning-text); }
   .block.cart { background: var(--bg); border: 2px dashed var(--accent); color: var(--accent); }
   .block.blackout { background: var(--surface-2); background-image: var(--hatch); border: 1px solid var(--border); color: var(--muted); cursor: not-allowed; }

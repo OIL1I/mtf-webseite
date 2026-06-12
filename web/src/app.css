@@ -17,6 +17,8 @@ html[data-theme='light'] {
   --success-soft: #eaf3de;
   --success-text: #3b6d11;
   --hatch: repeating-linear-gradient(135deg, transparent 0 6px, rgba(0, 0, 0, 0.06) 6px 12px);
+  /* Schraffur für fremdbelegte Zeiträume – 45° statt 135°, damit „belegt" und „gesperrt" unterscheidbar bleiben */
+  --hatch-busy: repeating-linear-gradient(45deg, transparent 0 5px, rgba(0, 0, 0, 0.08) 5px 10px);
   /* Vergangene/geschlossene Stunden im Kalender – muss sich klar von freien (Kartenfläche) abheben */
   --slot-off: #e9e5dc;
   --radius: 12px;
@@ -42,6 +44,7 @@ html[data-theme='dark'] {
   --success-soft: #23351a;
   --success-text: #b6dd8f;
   --hatch: repeating-linear-gradient(135deg, transparent 0 6px, rgba(255, 255, 255, 0.06) 6px 12px);
+  --hatch-busy: repeating-linear-gradient(45deg, transparent 0 5px, rgba(255, 255, 255, 0.09) 5px 10px);
   /* Im Dunkelmodus heller als die freie (Karten-)Fläche – dunkler wäre kaum sichtbar */
   --slot-off: #383430;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);

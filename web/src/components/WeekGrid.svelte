@@ -112,7 +112,7 @@
 
           {#each bookingBlocksForDay(bookings, day) as blk (blk.booking.id)}
             <button
-              class={'block ' + (blk.booking.mine ? 'mine' : blk.booking.status === 'pending' ? 'pending' : 'other')}
+              class={'block ' + (blk.booking.status === 'pending' ? 'pending' : blk.booking.mine ? 'mine' : 'other')}
               style={blockStyle(blk.topH, blk.heightH)}
               onclick={() => onBookingClick(blk.booking)}
               title={`${blk.booking.purpose} – ${blk.booking.userName}`}
@@ -227,7 +227,7 @@
   .block strong { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .block span, .block em { font-size: 10.5px; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-style: normal; }
   .block.mine { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent-soft-text); }
-  .block.other { background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); }
+  .block.other { background: var(--surface-2); background-image: var(--hatch-busy); border: 1px solid var(--border); color: var(--muted); }
   .block.pending { background: var(--warning-soft); border: 1px solid var(--warning-text); color: var(--warning-text); }
   .block.cart { background: transparent; border: 2px dashed var(--accent); color: var(--accent); }
   .legend {
@@ -247,7 +247,7 @@
     margin-right: 4px;
   }
   .sw.mine { background: var(--accent-soft); border: 1px solid var(--accent); }
-  .sw.other { background: var(--surface-2); border: 1px solid var(--border); }
+  .sw.other { background: var(--surface-2); background-image: var(--hatch-busy); border: 1px solid var(--border); }
   .sw.pending { background: var(--warning-soft); border: 1px solid var(--warning-text); }
   .sw.cart { border: 2px dashed var(--accent); }
   .sw.blackout { background: var(--surface-2); background-image: var(--hatch); border: 1px solid var(--border); }
