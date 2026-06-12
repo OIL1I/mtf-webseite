@@ -18,10 +18,10 @@ database_id = "54b719c7-cc31-4e5d-84c8-43a9bc8889da"
 SITE_ORIGIN = "https://buchungen.oil1i.de"
 # Vollständige URL der Seite inkl. Pfad, z.B. "https://DEINNAME.github.io/mtf-webseite/"
 SITE_URL = "https://buchungen.oil1i.de"
-MAIL_FROM = "MTF-Buchung buchungen.ff-horst-eiberg@pm.me"
+MAIL_FROM = "MTF-Buchung <mtf@oil1i.de>"
 TELEGRAM_BOT_USERNAME = "MtfHorstEibergBot"
 VAPID_SUBJECT = "mailto:buchungen.oil1i.de-m.repaint356@passmail.net"
-VAPID_PUBLIC_KEY = "BLaq7ek7pQNiYXRyfGa9Zo98EMZKn7U-awhrzIpACD64mFaNXW3bKXwbl9fy9ct57y9_18j9bYsCLY22v1kJ4cg"
+VAPID_PUBLIC_KEY = "BP-AwXm0i9vpPQKgb5NuSJH6TQ49fvQvxF-He44q2g8GrtIVgzTw9KXzzGaWgm_YyGpmvUT6hUmdUejBmfRCjYg"
 # Nur für lokale Entwicklung: Magic-Link-Token in der API-Antwort zurückgeben statt E-Mail zu senden
 DEV_MODE = "0"
 
