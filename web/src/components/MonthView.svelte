@@ -41,6 +41,42 @@
 
   const range = $derived(visibleHourRange(appData.meta?.rules, bookings, [selectedDay]));
   const hours = $derived(Array.from({ length: range.to - range.from }, (_, i) => range.from + i));
+  const dragEnabled = $derived(!!appData.meta?.features.dragSelect);
+
+  // Drag-Auswahl (Beta): senkrecht über freie Stunden ziehen – wie in der Wochenansicht
+  let drag = $state<{ from: number; to: number } | null>(null);
+
+  function dragStart(h: number, e: PointerEvent): void {
+    if (!dragEnabled) return;
+    e.preventDefault();
+    drag = { from: h, to: h };
+  }
+
+  function dragEnter(h: number): void {
+    if (drag) drag = { ...drag, to: h };
+  }
+
+  function dragCommit(): void {
+    if (!drag) return;
+    const lo = Math.min(drag.from, drag.to);
+    const hi = Math.max(drag.from, drag.to);
+    for (let h = lo; h <= hi; h++) {
+      if (cellState(selectedDay, h, appData.meta?.rules) === 'free' && !cart.has(selectedDay, h)) {
+        cart.toggleHour(selectedDay, h, vehicleId);
+      }
+    }
+    drag = null;
+  }
+
+  function inDrag(h: number): boolean {
+    if (!drag) return false;
+    return h >= Math.min(drag.from, drag.to) && h <= Math.max(drag.from, drag.to);
+  }
+
+  function slotClick(h: number): void {
+    if (dragEnabled) return; // wird über pointerup abgewickelt
+    cart.toggleHour(selectedDay, h, vehicleId);
+  }
 
   // Wie in WeekGrid: zusammenhängende Zeiträume werden als ein Block über das Stundenraster gelegt.
   function blockStyle(topH: number, heightH: number): string {
@@ -49,6 +85,8 @@
     return `top:${top + 1}px;height:${Math.max(height - 3, 12)}px;`;
   }
 </script>
+
+<svelte:window onpointerup={dragCommit} />
 
 <div class="layout">
   <div class="card month">
@@ -86,7 +124,14 @@
         <div class="hour-row" style={`top:${(h - range.from) * HOUR_H}px;height:${HOUR_H}px`}>
           <span class="t">{String(h).padStart(2, '0')}:00</span>
           {#if state === 'free'}
-            <button class="slot free" onclick={() => cart.toggleHour(selectedDay, h, vehicleId)} aria-label={`${h}:00 Uhr in den Korb legen`}>
+            <button
+              class="slot free"
+              class:drag-sel={inDrag(h)}
+              onclick={() => slotClick(h)}
+              onpointerdown={(e) => dragStart(h, e)}
+              onpointerenter={() => dragEnter(h)}
+              aria-label={`${h}:00 Uhr in den Korb legen`}
+            >
               <span class="plus">+</span>
             </button>
           {:else}
@@ -223,6 +268,7 @@
   .slot.free .plus { opacity: 0; color: var(--accent); font-weight: 600; margin: 0 auto; }
   .slot.free:hover { background: var(--accent-soft); }
   .slot.free:hover .plus { opacity: 1; }
+  .slot.free.drag-sel { background: var(--accent-soft); outline: 1.5px dashed var(--accent); outline-offset: -2px; }
   .slot.off { background: var(--slot-off); }
 
   /* Zusammenhängende Zeiträume liegen als ein Block über dem Raster (wie in der Wochenansicht) */
