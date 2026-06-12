@@ -26,12 +26,8 @@
       api<{ token: string; user: User; hasPassword: boolean }>('/api/auth/verify', { body: { token } })
         .then((res) => {
           session.set(res.token, res.user);
-          if (res.hasPassword) {
-            router.go('/kalender');
-          } else {
-            mode = 'setpw';
-            router.go('/login');
-          }
+          mode = 'setpw';
+          router.go('/login');
         })
         .catch((e) => {
           error = e instanceof Error ? e.message : 'Anmeldung fehlgeschlagen';
@@ -86,8 +82,8 @@
   async function setPassword(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     error = null;
-    if (newPw.length < 8) {
-      error = 'Das Passwort muss mindestens 8 Zeichen lang sein.';
+    if (newPw.length < 8 || newPw.length > 128) {
+      error = 'Das Passwort muss 8 bis 128 Zeichen lang sein.';
       return;
     }
     if (newPw !== newPw2) {
@@ -117,11 +113,11 @@
     {:else if mode === 'setpw'}
       <h2>Passwort festlegen</h2>
       <p class="small">
-        Fast geschafft, {session.user?.name}! Lege jetzt dein Passwort fest – damit meldest du dich ab sofort an.
+        Fast geschafft, {session.user?.name}! Lege jetzt ein neues Passwort fest. Andere offene Sitzungen werden dabei beendet.
       </p>
       <form onsubmit={setPassword}>
-        <input type="password" bind:value={newPw} placeholder="Neues Passwort (min. 8 Zeichen)" required minlength="8" autocomplete="new-password" />
-        <input type="password" bind:value={newPw2} placeholder="Passwort wiederholen" required autocomplete="new-password" />
+        <input type="password" bind:value={newPw} placeholder="Neues Passwort (8–128 Zeichen)" required minlength="8" maxlength="128" autocomplete="new-password" />
+        <input type="password" bind:value={newPw2} placeholder="Passwort wiederholen" required maxlength="128" autocomplete="new-password" />
         <button class="primary" disabled={busy}>{busy ? 'Speichert…' : 'Passwort speichern & loslegen'}</button>
       </form>
     {:else if mode === 'sent'}
@@ -136,7 +132,7 @@
     {:else}
       <form onsubmit={login}>
         <input type="email" bind:value={email} placeholder="deine@email.de" required autocomplete="email" />
-        <input type="password" bind:value={password} placeholder="Passwort" required autocomplete="current-password" />
+        <input type="password" bind:value={password} placeholder="Passwort" required maxlength="128" autocomplete="current-password" />
         <button class="primary" disabled={busy}>{busy ? 'Wird geprüft…' : 'Anmelden'}</button>
       </form>
       {#if hint}<div class="note amber">{hint}</div>{/if}

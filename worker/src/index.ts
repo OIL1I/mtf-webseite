@@ -1,7 +1,16 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createMiddleware } from 'hono/factory';
-import type { Blackout, BookingRow, CheckoutRequest, Env, Features, Rules, Vars, Vehicle } from './types';
+import type {
+  Blackout,
+  BookingRow,
+  CheckoutRequest,
+  Env,
+  Features,
+  Rules,
+  Vars,
+  Vehicle,
+} from './types';
 import { LICENSE_CLASSES } from './types';
 import {
   audit,
@@ -31,13 +40,24 @@ import {
   notifyReminder,
   notifyUserChangedByManager,
   notifyUserDecision,
-  notifyWaitlistFree,
   pushToUsers,
   tg,
   type NotifyItem,
 } from './notify';
 import { decideGroup, loadGroup } from './service';
 import { hashPassword, safeEqual, verifyPassword } from './password';
+import {
+  bookingWriteErrorMessage,
+  cancelActiveBooking,
+  classifyBookingWriteError,
+  decidePendingBooking,
+  vehicleWindowProblem,
+} from './booking-service';
+import { claimWaitlistOffers, offerNextWaitlistEntry, releaseExpiredWaitlistOffers } from './waitlist-service';
+import { readJson } from './http';
+import { registerPasswordRoutes } from './routes/password';
+import { registerSeriesRoutes } from './routes/series';
+import { registerWaitlistRoutes } from './routes/waitlist';
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
@@ -55,14 +75,6 @@ app.onError((err, c) => {
   console.error('Unbehandelter Fehler', err);
   return c.json({ error: 'Interner Fehler' }, 500);
 });
-
-async function readJson<T>(c: { req: { json: () => Promise<unknown> } }): Promise<T | null> {
-  try {
-    return (await c.req.json()) as T;
-  } catch {
-    return null;
-  }
-}
 
 // ---------- Öffentliche Routen ----------
 
@@ -172,6 +184,7 @@ app.post('/api/auth/login', async (c) => {
   const body = await readJson<{ email?: string; password?: string }>(c);
   const email = body?.email?.trim().toLowerCase();
   if (!email || !body?.password) return c.json({ error: 'E-Mail und Passwort erforderlich' }, 400);
+  if (body.password.length > 128) return c.json({ error: 'E-Mail oder Passwort ist falsch' }, 401);
   if (!(await loginRateCheck(c, email))) return c.json({ error: RATE_MSG }, 429);
   const user = await c.env.DB.prepare(
     'SELECT id, email, name, role, disabled, password_hash FROM users WHERE email = ?'
@@ -248,13 +261,16 @@ app.post('/api/auth/verify', async (c) => {
     .first<{ user_id: number; email: string; name: string; role: string; password_hash: string | null }>();
   if (!row) return c.json({ error: 'Link ist ungültig oder abgelaufen' }, 401);
   const session = randomToken();
+  const resetExpiresAt = isoIn(15 * 60_000);
   await c.env.DB.batch([
     c.env.DB.prepare('UPDATE login_tokens SET used = 1 WHERE token = ?').bind(body.token),
-    c.env.DB.prepare('INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)').bind(
-      session,
-      row.user_id,
-      isoIn(90 * 24 * 3_600_000)
-    ),
+    c.env.DB
+      .prepare(
+        `INSERT INTO sessions
+           (token, user_id, expires_at, password_reset_allowed, password_reset_expires_at)
+         VALUES (?, ?, ?, 1, ?)`
+      )
+      .bind(session, row.user_id, resetExpiresAt, resetExpiresAt),
     c.env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(nowIso()),
     c.env.DB.prepare('DELETE FROM login_tokens WHERE expires_at < ?').bind(nowIso()),
   ]);
@@ -268,7 +284,10 @@ app.post('/api/auth/verify', async (c) => {
 // Telegram ruft diese Route auf (Webhook)
 app.post('/api/telegram/webhook', async (c) => {
   const secret = c.req.header('x-telegram-bot-api-secret-token');
-  if (c.env.TELEGRAM_WEBHOOK_SECRET && secret !== c.env.TELEGRAM_WEBHOOK_SECRET) {
+  if (!c.env.TELEGRAM_WEBHOOK_SECRET) {
+    return c.json({ error: 'Telegram-Webhook ist nicht sicher konfiguriert' }, 503);
+  }
+  if (secret !== c.env.TELEGRAM_WEBHOOK_SECRET) {
     return c.json({ error: 'forbidden' }, 403);
   }
   interface TgUpdate {
@@ -293,7 +312,8 @@ app.post('/api/telegram/webhook', async (c) => {
       )
         .bind(token, nowIso())
         .first<{ user_id: number; name: string; role: string }>();
-      if (row && row.role === 'manager') {
+      const allowed = row && (row.role === 'manager' || (await getFeatures(c.env.DB)).memberTelegram);
+      if (row && allowed) {
         await c.env.DB.batch([
           c.env.DB.prepare('UPDATE telegram_link_tokens SET used = 1 WHERE token = ?').bind(token),
           c.env.DB.prepare(
@@ -303,7 +323,10 @@ app.post('/api/telegram/webhook', async (c) => {
         ]);
         await tg(c.env, 'sendMessage', {
           chat_id: chatId,
-          text: `✅ Verknüpft! Hallo ${row.name} – du bekommst ab jetzt alle Buchungs-Zusammenfassungen hier.`,
+          text:
+            row.role === 'manager'
+              ? `✅ Verknüpft! Hallo ${row.name} – du bekommst ab jetzt alle Buchungs-Zusammenfassungen hier.`
+              : `✅ Verknüpft! Hallo ${row.name} – du bekommst ab jetzt Bescheide zu deinen Buchungen hier.`,
         });
       } else {
         await tg(c.env, 'sendMessage', {
@@ -377,6 +400,10 @@ const managerOnly = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (
   await next();
 });
 
+registerPasswordRoutes(app);
+registerSeriesRoutes(app);
+registerWaitlistRoutes(app);
+
 app.get('/api/me', async (c) => {
   const user = c.get('user');
   const [link, pw] = await Promise.all([
@@ -390,17 +417,6 @@ app.get('/api/me', async (c) => {
     telegram: link ? { linked: true, username: link.username } : { linked: false },
     hasPassword: !!pw?.password_hash,
   });
-});
-
-app.post('/api/auth/set-password', async (c) => {
-  const body = await readJson<{ password?: string }>(c);
-  if (!body?.password || body.password.length < 8) {
-    return c.json({ error: 'Das Passwort muss mindestens 8 Zeichen lang sein' }, 400);
-  }
-  await c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
-    .bind(await hashPassword(body.password), c.get('user').id)
-    .run();
-  return c.json({ ok: true });
 });
 
 app.post('/api/auth/logout', async (c) => {
@@ -427,24 +443,6 @@ app.get('/api/meta', async (c) => {
     botUsername: c.env.TELEGRAM_BOT_USERNAME || null,
   });
 });
-
-/** Informiert Wartelisten-Einträge, deren Zeitraum sich mit einem frei gewordenen Slot überschneidet. */
-async function notifyWaitlist(env: Env, vehicleId: number, startTs: string, endTs: string): Promise<void> {
-  const features = await getFeatures(env.DB);
-  if (!features.waitlist) return;
-  await env.DB.prepare('DELETE FROM waitlist WHERE end_ts < ?').bind(nowIso()).run();
-  const { results } = await env.DB.prepare(
-    `SELECT w.id, w.start_ts, w.end_ts, u.id AS user_id, u.email, u.name, v.name AS vehicle_name
-     FROM waitlist w JOIN users u ON u.id = w.user_id JOIN vehicles v ON v.id = w.vehicle_id
-     WHERE w.vehicle_id = ? AND w.start_ts < ? AND w.end_ts > ?`
-  )
-    .bind(vehicleId, endTs, startTs)
-    .all<{ id: number; start_ts: string; end_ts: string; user_id: number; email: string; name: string; vehicle_name: string }>();
-  for (const w of results) {
-    await notifyWaitlistFree(env, { id: w.user_id, email: w.email, name: w.name }, w.vehicle_name, w.start_ts, w.end_ts);
-    await env.DB.prepare('DELETE FROM waitlist WHERE id = ?').bind(w.id).run();
-  }
-}
 
 // ---------- Kalender & Buchungen ----------
 
@@ -527,28 +525,16 @@ app.post('/api/bookings/checkout', async (c) => {
       );
     }
   }
-  if (vehicle.available_from || vehicle.available_to) {
-    const outside = items.find(
-      (it) =>
-        (vehicle.available_from && it.start < vehicle.available_from) ||
-        (vehicle.available_to && it.end > vehicle.available_to)
+  const windowProblem = vehicleWindowProblem(vehicle, items);
+  if (windowProblem) {
+    const outside = items[windowProblem.index];
+    return c.json(
+      {
+        error: 'Regelverstöße im Warenkorb',
+        problems: [{ index: windowProblem.index, start: outside.start, end: outside.end, reason: windowProblem.reason }],
+      },
+      409
     );
-    if (outside) {
-      return c.json(
-        {
-          error: 'Regelverstöße im Warenkorb',
-          problems: [
-            {
-              index: items.indexOf(outside),
-              start: outside.start,
-              end: outside.end,
-              reason: `Außerhalb des Verfügbarkeitszeitraums von „${vehicle.name}"`,
-            },
-          ],
-        },
-        409
-      );
-    }
   }
 
   const rules = await getRules(c.env.DB);
@@ -571,13 +557,21 @@ app.post('/api/bookings/checkout', async (c) => {
     .first<{ id: number }>();
   if (!group) return c.json({ error: 'Speichern fehlgeschlagen' }, 500);
 
-  await c.env.DB.batch(
-    result.items.map((it) =>
-      c.env.DB.prepare(
-        'INSERT INTO bookings (group_id, user_id, vehicle_id, start_ts, end_ts, status, series_key) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).bind(group.id, user.id, vehicleId, it.start, it.end, it.needsReview ? 'pending' : 'confirmed', it.seriesKey ?? null)
-    )
-  );
+  try {
+    await c.env.DB.batch(
+      result.items.map((it) =>
+        c.env.DB.prepare(
+          'INSERT INTO bookings (group_id, user_id, vehicle_id, start_ts, end_ts, status, series_key) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(group.id, user.id, vehicleId, it.start, it.end, it.needsReview ? 'pending' : 'confirmed', it.seriesKey ?? null)
+      )
+    );
+  } catch (error) {
+    await c.env.DB.prepare('DELETE FROM booking_groups WHERE id = ?').bind(group.id).run();
+    const writeError = classifyBookingWriteError(error);
+    if (writeError) return c.json({ error: bookingWriteErrorMessage(writeError) }, 409);
+    throw error;
+  }
+  await claimWaitlistOffers(c.env.DB, user.id, vehicleId, items);
 
   const detail = await loadGroup(c.env, group.id);
   c.executionCtx.waitUntil(
@@ -654,11 +648,13 @@ app.post('/api/bookings/:id/cancel', async (c) => {
   if (user.role !== 'manager' && !canUserCancel(booking.start_ts, rules)) {
     return c.json({ error: `Die Stornofrist (${rules.cancelDeadlineHours} Std. vor Beginn) ist abgelaufen – bitte wende dich an einen Admin.` }, 403);
   }
-  await c.env.DB.prepare("UPDATE bookings SET status = 'cancelled', cancelled_at = ? WHERE id = ?").bind(nowIso(), id).run();
+  if (!(await cancelActiveBooking(c.env.DB, id, nowIso()))) {
+    return c.json({ error: 'Die Buchung wurde zwischenzeitlich bereits geändert' }, 409);
+  }
   c.executionCtx.waitUntil(
     notifyManagersCancellation(c.env, user.name, booking.purpose, [{ ...booking, status: 'cancelled' }])
   );
-  c.executionCtx.waitUntil(notifyWaitlist(c.env, booking.vehicle_id, booking.start_ts, booking.end_ts));
+  c.executionCtx.waitUntil(offerNextWaitlistEntry(c.env, booking.vehicle_id, booking.start_ts, booking.end_ts));
   return c.json({ ok: true });
 });
 
@@ -679,26 +675,32 @@ app.post('/api/bookings/cancel-series', async (c) => {
     (b) => Date.parse(b.start_ts) > Date.now() && (user.role === 'manager' || canUserCancel(b.start_ts, rules))
   );
   if (cancellable.length > 0) {
-    await c.env.DB.batch(
+    const updates = await c.env.DB.batch(
       cancellable.map((b) =>
-        c.env.DB.prepare("UPDATE bookings SET status = 'cancelled', cancelled_at = ? WHERE id = ?").bind(nowIso(), b.id)
+        c.env.DB
+          .prepare("UPDATE bookings SET status = 'cancelled', cancelled_at = ? WHERE id = ? AND status IN ('confirmed', 'pending')")
+          .bind(nowIso(), b.id)
       )
     );
-    c.executionCtx.waitUntil(
-      notifyManagersCancellation(
-        c.env,
-        user.name,
-        results[0].purpose,
-        cancellable.map((b) => ({ ...b, status: 'cancelled' }))
-      )
-    );
-    c.executionCtx.waitUntil(
-      (async () => {
-        for (const b of cancellable) await notifyWaitlist(c.env, b.vehicle_id, b.start_ts, b.end_ts);
-      })()
-    );
+    const changed = cancellable.filter((_, index) => updates[index].meta.changes === 1);
+    if (changed.length > 0) {
+      c.executionCtx.waitUntil(
+        notifyManagersCancellation(
+          c.env,
+          user.name,
+          results[0].purpose,
+          changed.map((b) => ({ ...b, status: 'cancelled' }))
+        )
+      );
+      c.executionCtx.waitUntil(
+        (async () => {
+          for (const b of changed) await offerNextWaitlistEntry(c.env, b.vehicle_id, b.start_ts, b.end_ts);
+        })()
+      );
+    }
+    return c.json({ ok: true, cancelled: changed.length, skipped: results.length - changed.length });
   }
-  return c.json({ ok: true, cancelled: cancellable.length, skipped: results.length - cancellable.length });
+  return c.json({ ok: true, cancelled: 0, skipped: results.length });
 });
 
 // Wählbare Fahrer:innen für ein Fahrzeug (nach Führerscheinklasse gefiltert)
@@ -757,10 +759,13 @@ app.post('/api/push/check', async (c) => {
   return c.json({ subscribed: !!row });
 });
 
-// ---------- Telegram-Verknüpfung (Manager) ----------
+// ---------- Telegram-Verknüpfung (Admins immer, Mitglieder mit Beta-Feature) ----------
 
-app.post('/api/telegram/link-token', managerOnly, async (c) => {
+app.post('/api/telegram/link-token', async (c) => {
   if (!c.env.TELEGRAM_BOT_USERNAME) return c.json({ error: 'Telegram-Bot ist noch nicht konfiguriert' }, 400);
+  if (c.get('user').role !== 'manager' && !(await getFeatures(c.env.DB)).memberTelegram) {
+    return c.json({ error: 'Telegram für Mitglieder ist nicht aktiviert' }, 403);
+  }
   const token = randomToken(16);
   await c.env.DB.prepare('INSERT INTO telegram_link_tokens (token, user_id, expires_at) VALUES (?, ?, ?)')
     .bind(token, c.get('user').id, isoIn(15 * 60_000))
@@ -860,15 +865,15 @@ app.patch('/api/admin/bookings/:id', managerOnly, async (c) => {
   const ownItem = booking.user_id === manager.id;
 
   if (body?.action === 'cancel') {
-    await c.env.DB.prepare("UPDATE bookings SET status = 'cancelled', cancelled_at = ?, decided_by = ? WHERE id = ?")
-      .bind(nowIso(), manager.id, id)
-      .run();
+    if (!(await cancelActiveBooking(c.env.DB, id, nowIso(), manager.id))) {
+      return c.json({ error: 'Der Termin ist nicht mehr aktiv' }, 409);
+    }
     if (!ownItem) {
       c.executionCtx.waitUntil(
         notifyUserChangedByManager(c.env, owner, booking.purpose, `Termin ${fmtRange(booking.start_ts, booking.end_ts)} wurde storniert.`)
       );
     }
-    c.executionCtx.waitUntil(notifyWaitlist(c.env, booking.vehicle_id, booking.start_ts, booking.end_ts));
+    c.executionCtx.waitUntil(offerNextWaitlistEntry(c.env, booking.vehicle_id, booking.start_ts, booking.end_ts));
     await audit(c.env.DB, manager.name, 'Buchung storniert', `„${booking.purpose}" von ${owner.name}, ${fmtRange(booking.start_ts, booking.end_ts)}`);
     return c.json({ ok: true });
   }
@@ -876,30 +881,71 @@ app.patch('/api/admin/bookings/:id', managerOnly, async (c) => {
   if (body?.action === 'approve' || body?.action === 'reject') {
     if (booking.status !== 'pending') return c.json({ error: 'Termin wartet nicht auf Freigabe' }, 400);
     const newStatus = body.action === 'approve' ? 'confirmed' : 'rejected';
-    await c.env.DB.prepare('UPDATE bookings SET status = ?, decided_by = ? WHERE id = ?').bind(newStatus, manager.id, id).run();
+    try {
+      if (!(await decidePendingBooking(c.env.DB, id, newStatus, manager.id))) {
+        return c.json({ error: 'Der Termin wurde zwischenzeitlich bereits entschieden' }, 409);
+      }
+    } catch (error) {
+      const writeError = classifyBookingWriteError(error);
+      if (writeError) return c.json({ error: bookingWriteErrorMessage(writeError) }, 409);
+      throw error;
+    }
     const item: NotifyItem = { start_ts: booking.start_ts, end_ts: booking.end_ts, status: newStatus, series_key: booking.series_key };
     c.executionCtx.waitUntil(notifyUserDecision(c.env, owner, booking.purpose, body.action, [item]));
+    if (body.action === 'reject') {
+      c.executionCtx.waitUntil(offerNextWaitlistEntry(c.env, booking.vehicle_id, booking.start_ts, booking.end_ts));
+    }
     return c.json({ ok: true });
   }
 
   if (body?.start && body?.end) {
+    if (booking.status !== 'confirmed' && booking.status !== 'pending') {
+      return c.json({ error: 'Nur aktive Termine können verschoben werden' }, 409);
+    }
     if (!Number.isFinite(Date.parse(body.start)) || !Number.isFinite(Date.parse(body.end))) {
       return c.json({ error: 'Ungültige Zeitangaben' }, 400);
     }
     const start = new Date(body.start).toISOString();
     const end = new Date(body.end).toISOString();
     if (Date.parse(end) <= Date.parse(start)) return c.json({ error: 'Ende muss nach Beginn liegen' }, 400);
-    const rules = await getRules(c.env.DB);
+    const [rules, blackouts, vehicle] = await Promise.all([
+      getRules(c.env.DB),
+      getBlackouts(c.env.DB),
+      c.env.DB.prepare('SELECT * FROM vehicles WHERE id = ?').bind(booking.vehicle_id).first<Vehicle>(),
+    ]);
+    if (!vehicle || !vehicle.active) return c.json({ error: 'Das Fahrzeug ist nicht mehr aktiv' }, 409);
+    const windowProblem = vehicleWindowProblem(vehicle, [{ start, end }]);
+    if (windowProblem) return c.json({ error: windowProblem.reason }, 409);
     const bufferMs = rules.bufferMinutes * 60_000;
-    const conflict = await c.env.DB.prepare(
-      `SELECT id FROM bookings WHERE id != ? AND status IN ('confirmed', 'pending') AND start_ts < ? AND end_ts > ?`
+    const { results: existing } = await c.env.DB.prepare(
+      `SELECT id, group_id, user_id, vehicle_id, start_ts, end_ts, status, series_key
+       FROM bookings
+       WHERE id != ? AND vehicle_id = ? AND status IN ('confirmed', 'pending') AND start_ts < ? AND end_ts > ?`
     )
-      .bind(id, new Date(Date.parse(end) + bufferMs).toISOString(), new Date(Date.parse(start) - bufferMs).toISOString())
-      .first();
-    if (conflict) return c.json({ error: 'Neuer Zeitraum kollidiert mit einer anderen Buchung' }, 409);
-    await c.env.DB.prepare('UPDATE bookings SET start_ts = ?, end_ts = ?, decided_by = ? WHERE id = ?')
-      .bind(start, end, manager.id, id)
-      .run();
+      .bind(
+        id,
+        booking.vehicle_id,
+        new Date(Date.parse(end) + bufferMs).toISOString(),
+        new Date(Date.parse(start) - bufferMs).toISOString()
+      )
+      .all<BookingRow>();
+    const validation = validateCheckout([{ start, end }], rules, blackouts, existing, true);
+    if (!validation.ok) return c.json({ error: validation.problems[0]?.reason ?? 'Neuer Zeitraum ist nicht zulässig' }, 409);
+    try {
+      const update = await c.env.DB
+        .prepare(
+          `UPDATE bookings
+           SET start_ts = ?, end_ts = ?, decided_by = ?, reminded = 0
+           WHERE id = ? AND status IN ('confirmed', 'pending')`
+        )
+        .bind(start, end, manager.id, id)
+        .run();
+      if (update.meta.changes !== 1) return c.json({ error: 'Der Termin wurde zwischenzeitlich bereits geändert' }, 409);
+    } catch (error) {
+      const writeError = classifyBookingWriteError(error);
+      if (writeError) return c.json({ error: bookingWriteErrorMessage(writeError) }, 409);
+      throw error;
+    }
     if (!ownItem) {
       c.executionCtx.waitUntil(
         notifyUserChangedByManager(
@@ -910,6 +956,7 @@ app.patch('/api/admin/bookings/:id', managerOnly, async (c) => {
         )
       );
     }
+    c.executionCtx.waitUntil(offerNextWaitlistEntry(c.env, booking.vehicle_id, booking.start_ts, booking.end_ts));
     await audit(c.env.DB, manager.name, 'Buchung verschoben', `„${booking.purpose}" → ${fmtRange(start, end)}`);
     return c.json({ ok: true });
   }
@@ -982,7 +1029,11 @@ app.get('/api/admin/status', managerOnly, async (c) => {
     c.env.DB.prepare('SELECT COUNT(*) AS n FROM push_subscriptions').first<{ n: number }>(),
   ]);
   return c.json({
-    telegram: { configured: !!c.env.TELEGRAM_BOT_TOKEN, linkedManagers: tgLinks?.n ?? 0, botUsername: c.env.TELEGRAM_BOT_USERNAME || null },
+    telegram: {
+      configured: !!c.env.TELEGRAM_BOT_TOKEN && !!c.env.TELEGRAM_WEBHOOK_SECRET,
+      linkedManagers: tgLinks?.n ?? 0,
+      botUsername: c.env.TELEGRAM_BOT_USERNAME || null,
+    },
     webPush: { configured: !!c.env.VAPID_PUBLIC_KEY && !!c.env.VAPID_PRIVATE_JWK, subscriptions: pushSubs?.n ?? 0 },
     email: { configured: !!c.env.RESEND_API_KEY },
   });
@@ -1169,38 +1220,6 @@ app.post('/api/bookings/:id/triplog', async (c) => {
   return c.json({ ok: true });
 });
 
-app.post('/api/waitlist', async (c) => {
-  const features = await getFeatures(c.env.DB);
-  if (!features.waitlist) return c.json({ error: 'Warteliste ist nicht aktiviert' }, 403);
-  const user = c.get('user');
-  const body = await readJson<{ start?: string; end?: string; vehicleId?: number }>(c);
-  if (!body?.start || !body?.end || !Number.isFinite(Date.parse(body.start)) || !Number.isFinite(Date.parse(body.end))) {
-    return c.json({ error: 'Ungültiger Zeitraum' }, 400);
-  }
-  if (Date.parse(body.end) < Date.now()) return c.json({ error: 'Der Zeitraum liegt in der Vergangenheit' }, 400);
-  await c.env.DB.prepare('INSERT INTO waitlist (user_id, vehicle_id, start_ts, end_ts) VALUES (?, ?, ?, ?)')
-    .bind(user.id, body.vehicleId ?? 1, new Date(body.start).toISOString(), new Date(body.end).toISOString())
-    .run();
-  return c.json({ ok: true });
-});
-
-app.get('/api/my/waitlist', async (c) => {
-  const { results } = await c.env.DB.prepare(
-    `SELECT w.id, w.start_ts, w.end_ts, v.name AS vehicle_name FROM waitlist w
-     JOIN vehicles v ON v.id = w.vehicle_id WHERE w.user_id = ? AND w.end_ts > ? ORDER BY w.start_ts`
-  )
-    .bind(c.get('user').id, nowIso())
-    .all();
-  return c.json({ entries: results });
-});
-
-app.delete('/api/waitlist/:id', async (c) => {
-  await c.env.DB.prepare('DELETE FROM waitlist WHERE id = ? AND user_id = ?')
-    .bind(parseInt(c.req.param('id'), 10), c.get('user').id)
-    .run();
-  return c.json({ ok: true });
-});
-
 app.get('/api/groups/:id/comments', async (c) => {
   const features = await getFeatures(c.env.DB);
   if (!features.comments) return c.json({ comments: [], enabled: false });
@@ -1326,6 +1345,7 @@ app.post('/api/admin/test-notification', managerOnly, async (c) => {
 
 // Cron: verschickt Erinnerungen vor Fahrtbeginn (Beta-Feature)
 async function runReminders(env: Env): Promise<void> {
+  await releaseExpiredWaitlistOffers(env);
   const features = await getFeatures(env.DB);
   if (!features.reminders) return;
   const leadMs = (features.reminderLeadHours || 2) * 3_600_000;

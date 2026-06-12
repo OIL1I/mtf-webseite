@@ -1,10 +1,12 @@
 <script lang="ts">
   import { api } from '../../lib/api';
   import { appData } from '../../lib/appdata.svelte';
+  import ConfirmDialog from '../ConfirmDialog.svelte';
   import { LICENSE_CLASSES, type Vehicle } from '../../lib/types';
 
   let error = $state<string | null>(null);
   let note = $state<string | null>(null);
+  let confirmation = $state<{ vehicle: Vehicle; active: boolean } | null>(null);
 
   let newName = $state('');
   let newFrom = $state('');
@@ -94,6 +96,14 @@
     });
     editId = null;
   }
+
+  function requestActiveChange(vehicle: Vehicle): void {
+    if (!vehicle.active) {
+      void patch(vehicle.id, { active: true });
+      return;
+    }
+    confirmation = { vehicle, active: false };
+  }
 </script>
 
 {#if note}<div class="note green">{note}</div>{/if}
@@ -116,7 +126,7 @@
       {#if v.available_from || v.available_to}<span class="badge amber">temporär</span>{/if}
       <button class="ghost small-btn" onclick={() => startEdit(v)}>{editId === v.id ? 'Zuklappen' : 'Bearbeiten'}</button>
       {#if v.id !== 1}
-        <button class="ghost small-btn" onclick={() => patch(v.id, { active: !v.active })}>
+        <button class="ghost small-btn" onclick={() => requestActiveChange(v)}>
           {v.active ? 'Deaktivieren' : 'Aktivieren'}
         </button>
       {/if}
@@ -156,6 +166,16 @@
   <p class="small muted">Ohne Verfügbarkeitsfenster ist das Fahrzeug dauerhaft buchbar.</p>
   <button class="primary">Anlegen</button>
 </form>
+
+{#if confirmation}
+  <ConfirmDialog
+    title="Fahrzeug deaktivieren?"
+    message={`„${confirmation.vehicle.name}" kann danach nicht mehr für neue Buchungen gewählt werden. Bestehende Buchungen bleiben erhalten.`}
+    confirmLabel="Deaktivieren"
+    onconfirm={() => patch(confirmation!.vehicle.id, { active: confirmation!.active })}
+    onclose={() => (confirmation = null)}
+  />
+{/if}
 
 <style>
   .line {

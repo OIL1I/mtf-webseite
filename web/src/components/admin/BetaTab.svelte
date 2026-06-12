@@ -18,7 +18,8 @@
 
   const items: Item[] = [
     { key: 'reminders', icon: '⏰', title: 'Erinnerungen vor Fahrtbeginn', desc: 'Push/Telegram/E-Mail an die buchende Person, geprüft alle 15 Minuten.' },
-    { key: 'tripLog', icon: '📓', title: 'Fahrtenbuch', desc: 'Kilometerstand und Bemerkung je Fahrt unter „Meine Buchungen" erfassen.' },
+    { key: 'memberTelegram', icon: '✈', title: 'Telegram für Mitglieder', desc: 'Mitglieder können den Bot auf der Hilfe-Seite verknüpfen und bekommen Bescheide, Änderungen, Antworten und Erinnerungen per Telegram.' },
+    { key: 'tripLog', icon: '📓', title: 'Fahrtenbuch', desc: 'Kilometerstand und Bemerkung je Fahrt erfassen – der Knopf erscheint ab Fahrtbeginn unter „Meine Buchungen".' },
     { key: 'waitlist', icon: '🔔', title: 'Warteliste', desc: 'Bei belegten Slots eintragen – automatische Benachrichtigung bei Stornierung.' },
     { key: 'vehicles', icon: '🚒', title: 'Mehrere Fahrzeuge', desc: 'Weitere und temporäre Fahrzeuge (Leihwagen) mit eigenem Kalender – Verwaltung im Tab „Fahrzeuge".' },
     { key: 'stats', icon: '📊', title: 'Statistik', desc: 'Auslastung pro Monat, Top-Nutzer und Wochentage im Tab „Statistik".' },

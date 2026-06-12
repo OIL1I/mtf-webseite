@@ -3,6 +3,7 @@
   import { api } from '../lib/api';
   import { appData } from '../lib/appdata.svelte';
   import { cart } from '../lib/cart.svelte';
+  import { session } from '../lib/session.svelte';
   import WeekGrid from '../components/WeekGrid.svelte';
   import MonthView from '../components/MonthView.svelte';
   import ListView from '../components/ListView.svelte';
@@ -39,6 +40,26 @@
   let reloadFlag = $state(0);
   const refresh = () => (reloadFlag += 1);
 
+  function cacheBookings(key: string, value: Booking[]): void {
+    const prefix = `mtf.cache.bookings.v2:${session.user?.id ?? 'unknown'}:`;
+    const matching: { key: string; when: number }[] = [];
+    for (let index = 0; index < localStorage.length; index++) {
+      const candidate = localStorage.key(index);
+      if (!candidate?.startsWith(prefix) || candidate === key) continue;
+      try {
+        const stored = JSON.parse(localStorage.getItem(candidate) ?? 'null') as { when?: number } | null;
+        matching.push({ key: candidate, when: stored?.when ?? 0 });
+      } catch {
+        localStorage.removeItem(candidate);
+      }
+    }
+    matching
+      .sort((a, b) => b.when - a.when)
+      .slice(11)
+      .forEach((entry) => localStorage.removeItem(entry.key));
+    localStorage.setItem(key, JSON.stringify({ when: Date.now(), bookings: value }));
+  }
+
   $effect(() => {
     appData.load();
   });
@@ -48,22 +69,31 @@
     const from = rangeFrom.toISOString();
     const to = rangeTo.toISOString();
     const vehicleQuery = showVehicles ? `&vehicle=${selectedVehicle}` : '';
-    api<{ bookings: Booking[] }>(`/api/bookings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${vehicleQuery}`)
+    const controller = new AbortController();
+    const cacheKey = `mtf.cache.bookings.v2:${session.user?.id ?? 'unknown'}:${showVehicles ? selectedVehicle : 1}:${from}:${to}`;
+    api<{ bookings: Booking[] }>(
+      `/api/bookings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${vehicleQuery}`,
+      { signal: controller.signal }
+    )
       .then((res) => {
+        if (controller.signal.aborted) return;
         bookings = res.bookings;
         loadError = null;
         offlineSince = null;
-        try {
-          localStorage.setItem('mtf.cache.bookings', JSON.stringify({ when: Date.now(), bookings: res.bookings }));
-        } catch {
-          /* egal */
+        if (appData.meta?.features.offlineCache) {
+          try {
+            cacheBookings(cacheKey, res.bookings);
+          } catch {
+            /* Speicher voll */
+          }
         }
       })
       .catch((e) => {
+        if (controller.signal.aborted) return;
         // Offline-Cache (Beta-Feature): letzten Stand anzeigen
         if (appData.meta?.features.offlineCache) {
           try {
-            const cached = JSON.parse(localStorage.getItem('mtf.cache.bookings') ?? 'null') as {
+            const cached = JSON.parse(localStorage.getItem(cacheKey) ?? 'null') as {
               when: number;
               bookings: Booking[];
             } | null;
@@ -79,6 +109,7 @@
         }
         loadError = e instanceof Error ? e.message : 'Kalender konnte nicht geladen werden';
       });
+    return () => controller.abort();
   });
 
   function nav(dir: -1 | 1): void {

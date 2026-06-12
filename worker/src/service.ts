@@ -1,5 +1,6 @@
 import type { Env, BookingStatus } from './types';
 import { notifyUserDecision, type NotifyItem } from './notify';
+import { offerNextWaitlistEntry } from './waitlist-service';
 
 export interface GroupDetail {
   id: number;
@@ -7,7 +8,14 @@ export interface GroupDetail {
   driver: string;
   created_at: string;
   owner: { id: number; email: string; name: string };
-  items: { id: number; start_ts: string; end_ts: string; status: BookingStatus; series_key: string | null }[];
+  items: {
+    id: number;
+    vehicle_id: number;
+    start_ts: string;
+    end_ts: string;
+    status: BookingStatus;
+    series_key: string | null;
+  }[];
 }
 
 export async function loadGroup(env: Env, groupId: number): Promise<GroupDetail | null> {
@@ -27,10 +35,17 @@ export async function loadGroup(env: Env, groupId: number): Promise<GroupDetail 
     }>();
   if (!g) return null;
   const { results } = await env.DB.prepare(
-    'SELECT id, start_ts, end_ts, status, series_key FROM bookings WHERE group_id = ? ORDER BY start_ts'
+    'SELECT id, vehicle_id, start_ts, end_ts, status, series_key FROM bookings WHERE group_id = ? ORDER BY start_ts'
   )
     .bind(groupId)
-    .all<{ id: number; start_ts: string; end_ts: string; status: BookingStatus; series_key: string | null }>();
+    .all<{
+      id: number;
+      vehicle_id: number;
+      start_ts: string;
+      end_ts: string;
+      status: BookingStatus;
+      series_key: string | null;
+    }>();
   return {
     id: g.id,
     purpose: g.purpose,
@@ -59,13 +74,26 @@ export async function decideGroup(
   if (pending.length === 0) return { ok: true, changed: 0, group };
 
   const newStatus: BookingStatus = action === 'approve' ? 'confirmed' : 'rejected';
-  await env.DB.prepare("UPDATE bookings SET status = ?, decided_by = ? WHERE group_id = ? AND status = 'pending'")
+  const { results: changedRows } = await env.DB
+    .prepare(
+      "UPDATE bookings SET status = ?, decided_by = ? WHERE group_id = ? AND status = 'pending' RETURNING id"
+    )
     .bind(newStatus, deciderId, groupId)
-    .run();
+    .all<{ id: number }>();
+  const changedIds = new Set(changedRows.map((row) => row.id));
+  if (changedIds.size === 0) return { ok: true, changed: 0, group: (await loadGroup(env, groupId)) ?? group };
 
-  const decidedItems: NotifyItem[] = pending.map((it) => ({ ...it, status: newStatus }));
+  const decidedItems: NotifyItem[] = pending
+    .filter((item) => changedIds.has(item.id))
+    .map((it) => ({ ...it, status: newStatus }));
   await notifyUserDecision(env, group.owner, group.purpose, action, decidedItems);
+  if (action === 'reject') {
+    const rejected = pending.filter((item) => changedIds.has(item.id));
+    for (const item of rejected) {
+      await offerNextWaitlistEntry(env, item.vehicle_id, item.start_ts, item.end_ts);
+    }
+  }
 
   const refreshed = await loadGroup(env, groupId);
-  return { ok: true, changed: pending.length, group: refreshed ?? group };
+  return { ok: true, changed: changedIds.size, group: refreshed ?? group };
 }

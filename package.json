@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Buchungssystem für das Feuerwehr-MTF: Svelte-Frontend (GitHub Pages) + Cloudflare Worker API",
   "workspaces": [
+    "shared",
     "web",
     "worker"
   ],

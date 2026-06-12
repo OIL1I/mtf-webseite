@@ -1,5 +1,6 @@
 <script lang="ts">
   import Toggle from '../Toggle.svelte';
+  import ConfirmDialog from '../ConfirmDialog.svelte';
   import { api } from '../../lib/api';
   import { appData } from '../../lib/appdata.svelte';
   import { WEEKDAYS_SHORT, WEEKDAYS_LONG } from '../../lib/time';
@@ -9,6 +10,7 @@
   let saving = $state(false);
   let note = $state<string | null>(null);
   let error = $state<string | null>(null);
+  let deleteConfirmation = $state<Blackout | null>(null);
 
   const timeOptions: string[] = [];
   for (let h = 0; h <= 24; h++) {
@@ -127,7 +129,7 @@
           <strong class="small">{b.title}</strong>
           <div class="small muted">{fmtBlackout(b)}</div>
         </div>
-        <button class="ghost" onclick={() => deleteBlackout(b.id)} aria-label={`Sperrzeit ${b.title} löschen`}>🗑</button>
+        <button class="ghost" onclick={() => (deleteConfirmation = b)} aria-label={`Sperrzeit ${b.title} löschen`}>🗑</button>
       </div>
     {/each}
     <div class="add">
@@ -224,6 +226,16 @@
 <div class="save-row">
   <button class="primary" onclick={save} disabled={saving}>{saving ? 'Speichert…' : 'Alle Regeln speichern'}</button>
 </div>
+
+{#if deleteConfirmation}
+  <ConfirmDialog
+    title="Sperrzeit löschen?"
+    message={`„${deleteConfirmation.title}" wird dauerhaft entfernt.`}
+    confirmLabel="Löschen"
+    onconfirm={() => deleteBlackout(deleteConfirmation!.id)}
+    onclose={() => (deleteConfirmation = null)}
+  />
+{/if}
 
 <style>
   .grid {

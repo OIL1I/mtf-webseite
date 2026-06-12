@@ -38,6 +38,7 @@ export async function getBlackouts(db: D1Database): Promise<Blackout[]> {
 const DEFAULT_FEATURES: Features = {
   reminders: false,
   reminderLeadHours: 2,
+  memberTelegram: false,
   tripLog: false,
   waitlist: false,
   vehicles: false,

@@ -2,6 +2,8 @@
   import { api } from '../lib/api';
   import { appData } from '../lib/appdata.svelte';
   import { fmtDate, fmtRange } from '../lib/time';
+  import ConfirmDialog from '../components/ConfirmDialog.svelte';
+  import SeriesEditDialog from '../components/SeriesEditDialog.svelte';
   import type { MyBookingItem, MyGroup, WaitlistEntry } from '../lib/types';
 
   let groups = $state<MyGroup[]>([]);
@@ -10,6 +12,13 @@
   let info = $state<string | null>(null);
   let loaded = $state(false);
   let waitlist = $state<WaitlistEntry[]>([]);
+  let confirmation = $state<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    action: () => Promise<void>;
+  } | null>(null);
+  let seriesEdit = $state<{ groupId: number; seriesKey: string; items: MyBookingItem[] } | null>(null);
 
   const features = $derived(appData.meta?.features ?? null);
 
@@ -36,8 +45,13 @@
   });
 
   async function removeWaitlist(id: number): Promise<void> {
-    await api(`/api/waitlist/${id}`, { method: 'DELETE' }).catch(() => undefined);
-    waitlist = waitlist.filter((w) => w.id !== id);
+    error = null;
+    try {
+      await api(`/api/waitlist/${id}`, { method: 'DELETE' });
+      waitlist = waitlist.filter((w) => w.id !== id);
+    } catch (reason) {
+      error = reason instanceof Error ? reason.message : 'Wartelisteneintrag konnte nicht entfernt werden';
+    }
   }
 
   // Fahrtenbuch (Beta)
@@ -118,6 +132,36 @@
   }
 
   const upcoming = (g: MyGroup) => g.items.some((it) => Date.parse(it.end) > Date.now() && (it.status === 'confirmed' || it.status === 'pending'));
+
+  function confirmCancelItem(item: MyBookingItem): void {
+    confirmation = {
+      title: 'Termin stornieren?',
+      message: `${fmtRange(item.start, item.end)} wird verbindlich storniert.`,
+      confirmLabel: 'Termin stornieren',
+      action: () => cancelItem(item),
+    };
+  }
+
+  function confirmCancelSeries(groupId: number, seriesKey: string, count: number): void {
+    confirmation = {
+      title: 'Serie stornieren?',
+      message: `${count} zukünftige Termine außerhalb der Stornofrist werden storniert.`,
+      confirmLabel: 'Serie stornieren',
+      action: () => cancelSeries(groupId, seriesKey),
+    };
+  }
+
+  function confirmRemoveWaitlist(entry: WaitlistEntry): void {
+    confirmation = {
+      title: 'Wartelisteneintrag entfernen?',
+      message:
+        entry.status === 'offered'
+          ? 'Deine aktuelle Reservierung wird sofort freigegeben und der nächsten Person angeboten.'
+          : `${fmtRange(entry.start_ts, entry.end_ts)} wird aus deiner Warteliste entfernt.`,
+      confirmLabel: 'Entfernen',
+      action: () => removeWaitlist(entry.id),
+    };
+  }
 </script>
 
 <h1>Meine Buchungen</h1>
@@ -143,7 +187,12 @@
         <div class="series-head row">
           <span class="badge red">↻ Serie · {items.length} Termine</span>
           {#if active.length > 0}
-            <button class="danger small-btn" onclick={() => cancelSeries(group.id, key)}>Serie stornieren ({active.length})</button>
+            <button class="ghost small-btn" onclick={() => (seriesEdit = { groupId: group.id, seriesKey: key, items: group.items })}>
+              Serie bearbeiten
+            </button>
+            <button class="danger small-btn" onclick={() => confirmCancelSeries(group.id, key, active.length)}>
+              Serie stornieren ({active.length})
+            </button>
           {/if}
         </div>
       {/each}
@@ -162,7 +211,7 @@
               </button>
             {/if}
             {#if item.cancellable}
-              <button class="ghost small-btn" onclick={() => cancelItem(item)}>Stornieren</button>
+              <button class="ghost small-btn" onclick={() => confirmCancelItem(item)}>Stornieren</button>
             {/if}
           </li>
           {#if tripOpenFor === item.id}
@@ -188,11 +237,36 @@
         <li class="row item">
           <span class="when">{fmtRange(w.start_ts, w.end_ts)}</span>
           {#if features?.vehicles}<span class="muted small">🚒 {w.vehicle_name}</span>{/if}
-          <button class="ghost small-btn" onclick={() => removeWaitlist(w.id)}>Entfernen</button>
+          {#if w.status === 'offered'}
+            <span class="badge green">reserviert bis {w.offered_until ? new Date(w.offered_until).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '–'} Uhr</span>
+          {:else}
+            <span class="badge amber">wartet</span>
+          {/if}
+          <button class="ghost small-btn" onclick={() => confirmRemoveWaitlist(w)}>Entfernen</button>
         </li>
       {/each}
     </ul>
   </div>
+{/if}
+
+{#if confirmation}
+  <ConfirmDialog
+    title={confirmation.title}
+    message={confirmation.message}
+    confirmLabel={confirmation.confirmLabel}
+    onconfirm={confirmation.action}
+    onclose={() => (confirmation = null)}
+  />
+{/if}
+
+{#if seriesEdit}
+  <SeriesEditDialog
+    groupId={seriesEdit.groupId}
+    seriesKey={seriesEdit.seriesKey}
+    items={seriesEdit.items}
+    onclose={() => (seriesEdit = null)}
+    onChanged={load}
+  />
 {/if}
 
 {#if loaded && groups.length > 0}

@@ -11,6 +11,8 @@ export interface SeriesMeta {
 }
 
 const KEY = 'mtf.cart';
+const USER_KEY = 'mtf.user';
+const SESSION_RESET_EVENT = 'mtf:session-reset';
 
 interface Persisted {
   items: CartItem[];
@@ -19,15 +21,31 @@ interface Persisted {
   driver: string;
   driverId?: number | null;
   vehicleId?: number;
+  ownerId?: number;
+}
+
+function currentUserId(): number | null {
+  try {
+    return (JSON.parse(localStorage.getItem(USER_KEY) ?? 'null') as { id?: number } | null)?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function load(): Persisted {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? 'null') as Persisted | null;
-    if (raw && Array.isArray(raw.items)) {
+    if (raw && Array.isArray(raw.items) && (raw.ownerId === undefined || raw.ownerId === currentUserId())) {
       // Vergangene Slots beim Laden aussortieren
       raw.items = raw.items.filter((it) => it.end > Date.now());
-      return { items: raw.items, series: raw.series ?? {}, purpose: raw.purpose ?? '', driver: raw.driver ?? '' };
+      return {
+        items: raw.items,
+        series: raw.series ?? {},
+        purpose: raw.purpose ?? '',
+        driver: raw.driver ?? '',
+        driverId: raw.driverId ?? null,
+        vehicleId: raw.vehicleId ?? 1,
+      };
     }
   } catch {
     /* ignorieren */
@@ -52,6 +70,7 @@ class Cart {
     this.driver = p.driver;
     this.driverId = p.driverId ?? null;
     this.vehicleId = p.vehicleId ?? 1;
+    window.addEventListener(SESSION_RESET_EVENT, () => this.clear());
   }
 
   private save(): void {
@@ -64,6 +83,7 @@ class Cart {
         driver: this.driver,
         driverId: this.driverId,
         vehicleId: this.vehicleId,
+        ownerId: currentUserId() ?? undefined,
       })
     );
   }

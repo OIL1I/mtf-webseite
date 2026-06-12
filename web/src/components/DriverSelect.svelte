@@ -14,8 +14,12 @@
 
   $effect(() => {
     loaded = false;
-    api<{ requiredClass: string | null; drivers: DriverOption[] }>(`/api/drivers?vehicle=${vehicleId}`)
+    const controller = new AbortController();
+    api<{ requiredClass: string | null; drivers: DriverOption[] }>(`/api/drivers?vehicle=${vehicleId}`, {
+      signal: controller.signal,
+    })
       .then((res) => {
+        if (controller.signal.aborted) return;
         drivers = res.drivers;
         requiredClass = res.requiredClass;
         loaded = true;
@@ -28,8 +32,10 @@
         }
       })
       .catch((e) => {
+        if (controller.signal.aborted) return;
         error = e instanceof Error ? e.message : 'Fahrer:innen konnten nicht geladen werden';
       });
+    return () => controller.abort();
   });
 
   const filtered = $derived(

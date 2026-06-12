@@ -9,9 +9,12 @@
     "check": "tsc --noEmit",
     "db:init:local": "wrangler d1 execute mtf-db --local --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute mtf-db --remote --file=./schema.sql",
+    "db:migrate:local": "wrangler d1 migrations apply mtf-db --local && wrangler d1 execute mtf-db --local --file=./triggers.sql",
+    "db:migrate:remote": "wrangler d1 migrations apply mtf-db --remote && wrangler d1 execute mtf-db --remote --file=./triggers.sql",
     "vapid": "node scripts/generate-vapid.mjs"
   },
   "dependencies": {
+    "@mtf/shared": "*",
     "hono": "^4.6.0"
   },
   "devDependencies": {

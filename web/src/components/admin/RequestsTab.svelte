@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from '../../lib/api';
   import { fmtDate, fmtRange } from '../../lib/time';
+  import ConfirmDialog from '../ConfirmDialog.svelte';
   import type { AdminGroup } from '../../lib/types';
 
   let { onCountChange }: { onCountChange: (n: number) => void } = $props();
@@ -9,6 +10,7 @@
   let loaded = $state(false);
   let error = $state<string | null>(null);
   let note = $state<string | null>(null);
+  let rejectGroup = $state<AdminGroup | null>(null);
 
   async function load(): Promise<void> {
     try {
@@ -68,7 +70,7 @@
       </ul>
       <div class="row">
         <button class="primary" onclick={() => decide(g.id, 'approve')}>✓ Bestätigen ({pendingItems(g).length})</button>
-        <button class="danger" onclick={() => decide(g.id, 'reject')}>Ablehnen</button>
+        <button class="danger" onclick={() => (rejectGroup = g)}>Ablehnen</button>
         <a class="small edit-link" href="#/kalender">Einzelne Termine im Kalender anpassen →</a>
       </div>
     </div>
@@ -76,6 +78,16 @@
 </div>
 
 <p class="small muted hint">💬 Anfragen lassen sich auch direkt in Telegram per Knopf bestätigen oder ablehnen.</p>
+
+{#if rejectGroup}
+  <ConfirmDialog
+    title="Buchungsanfrage ablehnen?"
+    message={`Alle ${pendingItems(rejectGroup).length} offenen Termine von ${rejectGroup.owner.name} werden abgelehnt.`}
+    confirmLabel="Anfrage ablehnen"
+    onconfirm={() => decide(rejectGroup!.id, 'reject')}
+    onclose={() => (rejectGroup = null)}
+  />
+{/if}
 
 <style>
   .list {

@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  expires_at TEXT NOT NULL
+  expires_at TEXT NOT NULL,
+  password_reset_allowed INTEGER NOT NULL DEFAULT 0,
+  password_reset_expires_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS booking_groups (
@@ -113,11 +115,54 @@ INSERT OR IGNORE INTO vehicles (id, name) VALUES (1, 'MTF');
 CREATE TABLE IF NOT EXISTS waitlist (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
-  vehicle_id INTEGER NOT NULL DEFAULT 1,
+  vehicle_id INTEGER NOT NULL DEFAULT 1 REFERENCES vehicles(id),
   start_ts TEXT NOT NULL,
   end_ts TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting', 'offered', 'claimed', 'expired')),
+  offered_at TEXT,
+  offered_until TEXT,
+  offer_token TEXT,
+  claimed_at TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+CREATE INDEX IF NOT EXISTS idx_waitlist_range ON waitlist (vehicle_id, status, start_ts, end_ts);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_waitlist_unique_active
+  ON waitlist (user_id, vehicle_id, start_ts, end_ts)
+  WHERE status IN ('waiting', 'offered');
+
+CREATE TRIGGER IF NOT EXISTS waitlist_guard_offer
+BEFORE UPDATE OF status ON waitlist
+WHEN NEW.status = 'offered'
+BEGIN
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM waitlist w
+    WHERE w.id != NEW.id
+      AND w.vehicle_id = NEW.vehicle_id
+      AND w.status = 'offered'
+      AND julianday(w.offered_until) > julianday('now')
+      AND julianday(w.start_ts) < julianday(NEW.end_ts)
+      AND julianday(w.end_ts) > julianday(NEW.start_ts)
+  ) THEN RAISE(ABORT, 'waitlist_offer_exists') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS waitlist_status_insert
+BEFORE INSERT ON waitlist
+WHEN NEW.status != 'waiting'
+BEGIN
+  SELECT RAISE(ABORT, 'invalid_waitlist_transition');
+END;
+
+CREATE TRIGGER IF NOT EXISTS waitlist_status_transition
+BEFORE UPDATE OF status ON waitlist
+WHEN NEW.status != OLD.status
+  AND NOT (
+    (OLD.status = 'waiting' AND NEW.status IN ('offered', 'expired'))
+    OR (OLD.status = 'offered' AND NEW.status IN ('claimed', 'expired'))
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'invalid_waitlist_transition');
+END;
 
 CREATE TABLE IF NOT EXISTS trip_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,6 +202,7 @@ CREATE INDEX IF NOT EXISTS idx_attempts_key ON login_attempts (key, created_at);
 INSERT OR IGNORE INTO settings (key, value) VALUES ('features', json('{
   "reminders": false,
   "reminderLeadHours": 2,
+  "memberTelegram": false,
   "tripLog": false,
   "waitlist": false,
   "vehicles": false,
@@ -193,3 +239,82 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('rules', json('{
   "reviewSeries": true,
   "reviewAll": false
 }'));
+
+-- Atomare Datenintegrität: aktive Buchungen dürfen sich je Fahrzeug auch unter
+-- parallelen Worker-Requests nicht überschneiden. Der konfigurierte Puffer gilt
+-- ebenso wie ein aktives Wartelisten-Angebot für eine andere Person.
+CREATE TRIGGER IF NOT EXISTS bookings_guard_insert
+BEFORE INSERT ON bookings
+WHEN NEW.status IN ('confirmed', 'pending')
+BEGIN
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM waitlist w
+    WHERE w.vehicle_id = NEW.vehicle_id
+      AND w.status = 'offered'
+      AND julianday(w.offered_until) > julianday('now')
+      AND w.user_id != NEW.user_id
+      AND julianday(w.start_ts) < julianday(NEW.end_ts)
+      AND julianday(w.end_ts) > julianday(NEW.start_ts)
+  ) THEN RAISE(ABORT, 'booking_reserved') END;
+
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM bookings b
+    WHERE b.vehicle_id = NEW.vehicle_id
+      AND b.status IN ('confirmed', 'pending')
+      AND julianday(b.start_ts) <
+        julianday(NEW.end_ts) +
+        CAST(COALESCE(json_extract((SELECT value FROM settings WHERE key = 'rules'), '$.bufferMinutes'), 0) AS REAL) / 1440.0
+      AND julianday(b.end_ts) >
+        julianday(NEW.start_ts) -
+        CAST(COALESCE(json_extract((SELECT value FROM settings WHERE key = 'rules'), '$.bufferMinutes'), 0) AS REAL) / 1440.0
+  ) THEN RAISE(ABORT, 'booking_conflict') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS bookings_guard_update
+BEFORE UPDATE OF start_ts, end_ts, status, vehicle_id ON bookings
+WHEN NEW.status IN ('confirmed', 'pending')
+  AND (
+    OLD.status NOT IN ('confirmed', 'pending')
+    OR NEW.start_ts != OLD.start_ts
+    OR NEW.end_ts != OLD.end_ts
+    OR NEW.vehicle_id != OLD.vehicle_id
+  )
+BEGIN
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM waitlist w
+    WHERE w.vehicle_id = NEW.vehicle_id
+      AND w.status = 'offered'
+      AND julianday(w.offered_until) > julianday('now')
+      AND w.user_id != NEW.user_id
+      AND julianday(w.start_ts) < julianday(NEW.end_ts)
+      AND julianday(w.end_ts) > julianday(NEW.start_ts)
+  ) THEN RAISE(ABORT, 'booking_reserved') END;
+
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM bookings b
+    WHERE b.id != NEW.id
+      AND b.vehicle_id = NEW.vehicle_id
+      AND b.status IN ('confirmed', 'pending')
+      AND julianday(b.start_ts) <
+        julianday(NEW.end_ts) +
+        CAST(COALESCE(json_extract((SELECT value FROM settings WHERE key = 'rules'), '$.bufferMinutes'), 0) AS REAL) / 1440.0
+      AND julianday(b.end_ts) >
+        julianday(NEW.start_ts) -
+        CAST(COALESCE(json_extract((SELECT value FROM settings WHERE key = 'rules'), '$.bufferMinutes'), 0) AS REAL) / 1440.0
+  ) THEN RAISE(ABORT, 'booking_conflict') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS bookings_status_transition
+BEFORE UPDATE OF status ON bookings
+WHEN NEW.status != OLD.status
+  AND NOT (
+    (OLD.status = 'pending' AND NEW.status IN ('confirmed', 'rejected', 'cancelled'))
+    OR (OLD.status = 'confirmed' AND NEW.status = 'cancelled')
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'invalid_booking_transition');
+END;

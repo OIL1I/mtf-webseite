@@ -1,7 +1,11 @@
 import type { Env } from './types';
 import { fmtRange } from './rules';
+import { getFeatures } from './db';
 import { emailLayout, sendEmail } from './email';
+import { escapeHtml } from './html';
 import { sendWebPush, type PushSub } from './webpush';
+
+export { escapeHtml } from './html';
 
 export async function tg(env: Env, method: string, params: Record<string, unknown>): Promise<unknown> {
   if (!env.TELEGRAM_BOT_TOKEN) return null;
@@ -122,6 +126,7 @@ export async function notifyUserDecision(
   const title = approved ? `Buchung bestätigt: ${purpose}` : `Buchung abgelehnt: ${purpose}`;
   const body = summarizeItems(items, 4);
   await pushToUsers(env, [user.id], { title, body, url: `${env.SITE_URL}#/meine-buchungen`, tag: `decision-${purpose}` });
+  await telegramToUser(env, user.id, `${approved ? '✅' : '❌'} <b>${escapeHtml(title)}</b>\n${escapeHtml(body)}`);
   await sendEmail(
     env,
     user.email,
@@ -161,6 +166,7 @@ export async function notifyUserChangedByManager(
 ): Promise<void> {
   const title = `Buchung geändert: ${purpose}`;
   await pushToUsers(env, [user.id], { title, body: detail, url: `${env.SITE_URL}#/meine-buchungen` });
+  await telegramToUser(env, user.id, `✏️ <b>${escapeHtml(title)}</b>\n${escapeHtml(detail)}`);
   await sendEmail(
     env,
     user.email,
@@ -175,11 +181,19 @@ export async function notifyUserChangedByManager(
   );
 }
 
-async function telegramChatOf(env: Env, userId: number): Promise<string | null> {
-  const row = await env.DB.prepare('SELECT chat_id FROM telegram_links WHERE user_id = ?')
+/**
+ * Schickt eine Telegram-Nachricht an eine einzelne Person, sofern verknüpft.
+ * Admins immer, Mitglieder nur bei aktivem Beta-Feature „Telegram für Mitglieder".
+ */
+async function telegramToUser(env: Env, userId: number, text: string): Promise<void> {
+  const row = await env.DB.prepare(
+    'SELECT t.chat_id, u.role FROM telegram_links t JOIN users u ON u.id = t.user_id WHERE t.user_id = ? AND u.disabled = 0'
+  )
     .bind(userId)
-    .first<{ chat_id: string }>();
-  return row?.chat_id ?? null;
+    .first<{ chat_id: string; role: string }>();
+  if (!row) return;
+  if (row.role !== 'manager' && !(await getFeatures(env.DB)).memberTelegram) return;
+  await tg(env, 'sendMessage', { chat_id: row.chat_id, text, parse_mode: 'HTML' });
 }
 
 export async function notifyReminder(
@@ -193,10 +207,7 @@ export async function notifyReminder(
   const title = `Erinnerung: ${purpose}`;
   const body = `${vehicleName} · ${fmtRange(startIso, endIso)}`;
   await pushToUsers(env, [user.id], { title, body, url: `${env.SITE_URL}#/meine-buchungen`, tag: `reminder-${startIso}` });
-  const chat = await telegramChatOf(env, user.id);
-  if (chat) {
-    await tg(env, 'sendMessage', { chat_id: chat, text: `⏰ <b>${escapeHtml(title)}</b>\n${escapeHtml(body)}`, parse_mode: 'HTML' });
-  }
+  await telegramToUser(env, user.id, `⏰ <b>${escapeHtml(title)}</b>\n${escapeHtml(body)}`);
   await sendEmail(
     env,
     user.email,
@@ -210,11 +221,18 @@ export async function notifyWaitlistFree(
   user: { id: number; email: string; name: string },
   vehicleName: string,
   startIso: string,
-  endIso: string
+  endIso: string,
+  offeredUntil: string
 ): Promise<void> {
-  const title = 'Zeitraum frei geworden!';
-  const body = `${vehicleName} · ${fmtRange(startIso, endIso)} ist durch eine Stornierung frei geworden.`;
+  const title = 'Wartelisten-Angebot verfügbar';
+  const until = new Intl.DateTimeFormat('de-DE', {
+    timeZone: 'Europe/Berlin',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(offeredUntil));
+  const body = `${vehicleName} · ${fmtRange(startIso, endIso)} ist bis ${until} Uhr für dich reserviert.`;
   await pushToUsers(env, [user.id], { title, body, url: `${env.SITE_URL}#/kalender` });
+  await telegramToUser(env, user.id, `🔔 <b>${escapeHtml(title)}</b>\n${escapeHtml(body)}\n<a href="${env.SITE_URL}#/kalender">Jetzt buchen →</a>`);
   await sendEmail(
     env,
     user.email,
@@ -256,6 +274,7 @@ export async function notifyCommentToUser(
 ): Promise<void> {
   const title = `Antwort zu „${purpose}"`;
   await pushToUsers(env, [user.id], { title, body: `${fromName}: ${text.slice(0, 120)}`, url: `${env.SITE_URL}#/meine-buchungen` });
+  await telegramToUser(env, user.id, `💬 <b>${escapeHtml(title)}</b>\n${escapeHtml(fromName)}: ${escapeHtml(text)}`);
   await sendEmail(
     env,
     user.email,
@@ -266,8 +285,4 @@ export async function notifyCommentToUser(
        <blockquote style="border-left:3px solid #a32d2d;margin:0;padding:4px 12px;">${escapeHtml(text)}</blockquote>`
     )
   );
-}
-
-export function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

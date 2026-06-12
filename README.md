@@ -58,6 +58,15 @@ npx wrangler d1 create mtf-db        # die ausgegebene database_id in wrangler.t
 npm run db:init:remote               # Schema + Standard-Regeln einspielen
 ```
 
+Bei einer bereits bestehenden Datenbank stattdessen vor dem Worker-Deploy die ausstehenden
+Migrationen anwenden. Der Befehl installiert anschließend automatisch die
+Datenbank-Trigger über den D1-Dateiimport:
+
+```bash
+cd worker
+npm run db:migrate:remote
+```
+
 In `wrangler.toml` anpassen: `SITE_ORIGIN` (z.B. `https://DEINNAME.github.io`),
 `SITE_URL` (z.B. `https://DEINNAME.github.io/mtf-webseite/`), `MAIL_FROM`,
 `VAPID_SUBJECT` (deine Kontakt-Mail als `mailto:`) und **`DEV_MODE = "0"`**.
@@ -101,6 +110,8 @@ npx wrangler deploy
 
 curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://mtf-api.DEIN-ACCOUNT.workers.dev/api/telegram/webhook&secret_token=<WEBHOOK_SECRET>"
 ```
+
+Ohne `TELEGRAM_WEBHOOK_SECRET` antwortet der Webhook absichtlich mit HTTP 503 und verarbeitet keine Updates.
 
 Admins verknüpfen sich danach selbst über **Hilfe → „Telegram verbinden"** (Einmal-Link, 15 Minuten gültig).
 

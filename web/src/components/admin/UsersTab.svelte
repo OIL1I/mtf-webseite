@@ -1,11 +1,13 @@
 <script lang="ts">
   import { api } from '../../lib/api';
   import { session } from '../../lib/session.svelte';
+  import ConfirmDialog from '../ConfirmDialog.svelte';
   import { LICENSE_CLASSES, type AdminUser } from '../../lib/types';
 
   let users = $state<AdminUser[]>([]);
   let error = $state<string | null>(null);
   let note = $state<string | null>(null);
+  let confirmation = $state<{ title: string; message: string; label: string; action: () => Promise<void> } | null>(null);
 
   let newName = $state('');
   let newEmail = $state('');
@@ -77,6 +79,30 @@
     const next = current.includes(cl) ? current.filter((c) => c !== cl) : [...current, cl];
     await patch(user, { licenseClasses: next });
   }
+
+  function requestRoleChange(user: AdminUser, role: string, select: HTMLSelectElement): void {
+    select.value = user.role;
+    if (role !== 'member' && role !== 'manager') return;
+    confirmation = {
+      title: 'Rolle ändern?',
+      message: `${user.name} wird ${role === 'manager' ? 'zum Admin' : 'zum Mitglied'}.`,
+      label: 'Rolle ändern',
+      action: () => patch(user, { role }),
+    };
+  }
+
+  function requestDisabledChange(user: AdminUser): void {
+    if (user.disabled) {
+      void patch(user, { disabled: false });
+      return;
+    }
+    confirmation = {
+      title: 'Konto deaktivieren?',
+      message: `${user.name} kann sich danach nicht mehr anmelden. Bestehende Buchungen bleiben erhalten.`,
+      label: 'Konto deaktivieren',
+      action: () => patch(user, { disabled: true }),
+    };
+  }
 </script>
 
 {#if note}<div class="note green">{note}</div>{/if}
@@ -106,7 +132,7 @@
       {/if}
       <select
         value={user.role}
-        onchange={(e) => patch(user, { role: (e.currentTarget as HTMLSelectElement).value })}
+        onchange={(e) => requestRoleChange(user, e.currentTarget.value, e.currentTarget)}
         aria-label={`Rolle von ${user.name}`}
       >
         <option value="member">Mitglied</option>
@@ -114,7 +140,7 @@
       </select>
       <button
         class={user.disabled ? '' : 'ghost'}
-        onclick={() => patch(user, { disabled: !user.disabled })}
+        onclick={() => requestDisabledChange(user)}
         title={user.disabled ? 'Wieder aktivieren' : 'Deaktivieren – kann sich nicht mehr anmelden'}
       >
         {user.disabled ? 'Aktivieren' : 'Deaktivieren'}
@@ -146,6 +172,16 @@
     <button class="primary">Einladen</button>
   </div>
 </form>
+
+{#if confirmation}
+  <ConfirmDialog
+    title={confirmation.title}
+    message={confirmation.message}
+    confirmLabel={confirmation.label}
+    onconfirm={confirmation.action}
+    onclose={() => (confirmation = null)}
+  />
+{/if}
 
 <style>
   .line {

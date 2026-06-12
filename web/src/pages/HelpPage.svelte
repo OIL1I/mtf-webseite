@@ -24,8 +24,11 @@
   $effect(() => {
     appData.load();
     getPushState().then((s) => (pushState = s));
-    if (session.isManager) refreshMe();
+    refreshMe();
   });
+
+  /** Telegram-Bereich: Admins immer, Mitglieder nur mit Beta-Feature. */
+  const tgVisible = $derived(session.isManager || !!appData.meta?.features.memberTelegram);
 
   async function onEnablePush(): Promise<void> {
     pushError = null;
@@ -98,6 +101,7 @@
     }
   }
 
+  let currentPw = $state('');
   let pw1 = $state('');
   let pw2 = $state('');
   let pwBusy = $state(false);
@@ -108,8 +112,8 @@
     e.preventDefault();
     pwNote = null;
     pwError = null;
-    if (pw1.length < 8) {
-      pwError = 'Das Passwort muss mindestens 8 Zeichen lang sein.';
+    if (pw1.length < 8 || pw1.length > 128) {
+      pwError = 'Das Passwort muss 8 bis 128 Zeichen lang sein.';
       return;
     }
     if (pw1 !== pw2) {
@@ -118,8 +122,9 @@
     }
     pwBusy = true;
     try {
-      await api('/api/auth/set-password', { body: { password: pw1 } });
+      await api('/api/auth/change-password', { body: { currentPassword: currentPw, password: pw1 } });
       pwNote = 'Passwort geändert.';
+      currentPw = '';
       pw1 = '';
       pw2 = '';
     } catch (err) {
@@ -201,20 +206,40 @@
   <p class="small muted">ℹ Auf dem iPhone klappt das ab iOS 16.4 – nur über die installierte Home-Bildschirm-App, nicht im normalen Safari-Tab. Push-Mitteilungen auf iOS zeigen keine Aktions-Knöpfe; ein Tipp darauf öffnet direkt die richtige Seite.</p>
 </div>
 
-{#if session.isManager}
+{#if tgVisible}
   <div class="card section">
     <div class="row head">
-      <h2>✈ Telegram für Admins verbinden</h2>
-      <span class="badge red">Nur für Admins sichtbar</span>
+      <h2>✈ Telegram verbinden</h2>
+      {#if session.isManager}<span class="badge red">Admin-Konto</span>{/if}
     </div>
     <p class="small muted">
-      Verknüpfte Admins bekommen zu jedem Checkout eine Zusammenfassung mit Knöpfen zum Bestätigen oder Ablehnen – direkt in Telegram.
+      {#if session.isManager}
+        Verknüpfte Admins bekommen zu jedem Checkout eine Zusammenfassung mit Knöpfen zum Bestätigen oder Ablehnen – direkt in Telegram.
+      {:else}
+        Verknüpfst du dein Telegram, schickt dir der Bot Bescheide zu deinen eigenen Buchungen – zusätzlich zu Web-Push und E-Mail.
+      {/if}
     </p>
     <ol class="steps">
       <li>Unten auf <strong>„Telegram verbinden"</strong> tippen – dein persönlicher Einmal-Link öffnet die Telegram-App direkt beim Bot.</li>
       <li>In Telegram auf <strong>„Start"</strong> tippen. Mehr ist nicht nötig – der Code steckt schon im Link.</li>
-      <li>Der Bot bestätigt die Verknüpfung und schickt ab sofort alle Buchungs-Zusammenfassungen.</li>
+      <li>Der Bot bestätigt die Verknüpfung – fertig.</li>
     </ol>
+    {#if !session.isManager}
+      <p class="small"><strong>Das schickt dir der Bot:</strong></p>
+      <ul class="tg-list small muted">
+        <li>✅ / ❌ <strong>Bescheid</strong>, sobald ein Admin deine Buchung bestätigt oder ablehnt – mit Zweck und Terminliste</li>
+        <li>✏️ <strong>Änderungen</strong>, wenn ein Admin deine Buchung anpasst</li>
+        {#if appData.meta?.features.comments}<li>💬 <strong>Antworten</strong> von Admins auf deine Rückfragen</li>{/if}
+        {#if appData.meta?.features.waitlist}<li>🔔 <strong>Warteliste:</strong> wenn ein vorgemerkter Zeitraum frei wird</li>{/if}
+        {#if appData.meta?.features.reminders}<li>⏰ <strong>Erinnerung</strong> vor Fahrtbeginn</li>{/if}
+      </ul>
+      <div class="tg-sample small">
+        <span class="muted">Beispiel-Nachricht:</span><br />
+        ✅ <strong>Buchung bestätigt: Lehrgang Maschinist</strong><br />
+        • Fr., 19.06., 10:00–12:00 Uhr<br />
+        • Sa., 20.06., 09:00–11:00 Uhr
+      </div>
+    {/if}
     <div class="row">
       <button class="primary" onclick={connectTelegram}>✈ Telegram verbinden</button>
       {#if telegram?.linked}
@@ -225,7 +250,7 @@
       {/if}
     </div>
     {#if tgError}<div class="note red">{tgError}</div>{/if}
-    <p class="small muted">🔒 Der Link ist 15 Minuten gültig, nur einmal nutzbar und funktioniert nur für dein eigenes Admin-Konto.</p>
+    <p class="small muted">🔒 Der Link ist 15 Minuten gültig, nur einmal nutzbar und funktioniert nur für dein eigenes Konto. Trennen jederzeit hier möglich.</p>
   </div>
 {/if}
 
@@ -250,10 +275,11 @@
 
 <div class="card section">
   <h2>🔒 Passwort ändern</h2>
-  <p class="small muted">Du meldest dich mit E-Mail und Passwort an. Hier kannst du dein Passwort jederzeit ändern.</p>
+  <p class="small muted">Zur Sicherheit wird dein aktuelles Passwort geprüft. Andere offene Sitzungen werden beendet.</p>
   <form class="pw-form" onsubmit={changePassword}>
-    <input type="password" bind:value={pw1} placeholder="Neues Passwort (min. 8 Zeichen)" required minlength="8" autocomplete="new-password" />
-    <input type="password" bind:value={pw2} placeholder="Wiederholen" required autocomplete="new-password" />
+    <input type="password" bind:value={currentPw} placeholder="Aktuelles Passwort" required maxlength="128" autocomplete="current-password" />
+    <input type="password" bind:value={pw1} placeholder="Neues Passwort (8–128 Zeichen)" required minlength="8" maxlength="128" autocomplete="new-password" />
+    <input type="password" bind:value={pw2} placeholder="Wiederholen" required maxlength="128" autocomplete="new-password" />
     <button class="primary" disabled={pwBusy}>{pwBusy ? 'Speichert…' : 'Ändern'}</button>
   </form>
   {#if pwNote}<div class="note green">{pwNote}</div>{/if}
@@ -307,6 +333,20 @@
     margin-right: 6px;
   }
   .danger-text { color: var(--accent); }
+  .tg-list {
+    list-style: none;
+    padding: 0;
+    margin: 4px 0 10px;
+  }
+  .tg-list li { padding: 3px 0; }
+  .tg-sample {
+    background: var(--surface-2);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
   .pw-form {
     display: flex;
     gap: 8px;

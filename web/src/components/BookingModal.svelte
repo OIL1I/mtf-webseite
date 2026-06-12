@@ -1,5 +1,6 @@
 <script lang="ts">
   import Modal from './Modal.svelte';
+  import ConfirmDialog from './ConfirmDialog.svelte';
   import { api } from '../lib/api';
   import { session } from '../lib/session.svelte';
   import { appData } from '../lib/appdata.svelte';
@@ -12,6 +13,7 @@
   let error = $state<string | null>(null);
   let editMode = $state(false);
   let waitlistNote = $state<string | null>(null);
+  let confirmation = $state<{ title: string; message: string; label: string; action: () => Promise<void> } | null>(null);
 
   const features = $derived(appData.meta?.features ?? null);
 
@@ -67,8 +69,13 @@
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
-  let editStart = $state(toLocalInput(booking.start));
-  let editEnd = $state(toLocalInput(booking.end));
+  let editStart = $state('');
+  let editEnd = $state('');
+
+  $effect(() => {
+    editStart = toLocalInput(booking.start);
+    editEnd = toLocalInput(booking.end);
+  });
 
   const active = $derived(booking.status === 'confirmed' || booking.status === 'pending');
   const deadlineH = $derived(appData.meta?.rules.cancelDeadlineHours ?? 0);
@@ -99,6 +106,10 @@
         body: { start: new Date(editStart).toISOString(), end: new Date(editEnd).toISOString() },
       })
     );
+
+  function ask(title: string, message: string, label: string, action: () => Promise<void>): void {
+    confirmation = { title, message, label, action };
+  }
 </script>
 
 <Modal title={booking.purpose} {onclose}>
@@ -126,7 +137,17 @@
       <label>Beginn <input type="datetime-local" bind:value={editStart} /></label>
       <label>Ende <input type="datetime-local" bind:value={editEnd} /></label>
       <div class="row">
-        <button class="primary" onclick={adminMove} disabled={busy}>Verschieben</button>
+        <button
+          class="primary"
+          onclick={() =>
+            ask(
+              'Termin verschieben?',
+              `${fmtRange(booking.start, booking.end)} wird auf ${fmtRange(new Date(editStart).toISOString(), new Date(editEnd).toISOString())} verschoben.`,
+              'Verschieben',
+              adminMove
+            )}
+          disabled={busy || !editStart || !editEnd}
+        >Verschieben</button>
         <button class="ghost" onclick={() => (editMode = false)}>Abbrechen</button>
       </div>
     </div>
@@ -134,16 +155,32 @@
     <div class="row buttons">
       {#if session.isManager && booking.status === 'pending'}
         <button class="primary" onclick={() => adminAction('approve')} disabled={busy}>✓ Bestätigen</button>
-        <button class="danger" onclick={() => adminAction('reject')} disabled={busy}>Ablehnen</button>
+        <button
+          class="danger"
+          onclick={() => ask('Termin ablehnen?', `${fmtRange(booking.start, booking.end)} wird abgelehnt.`, 'Ablehnen', () => adminAction('reject'))}
+          disabled={busy}
+        >Ablehnen</button>
       {/if}
       {#if session.isManager && active}
         <button onclick={() => (editMode = true)} disabled={busy}>Verschieben…</button>
-        <button class="danger" onclick={() => adminAction('cancel')} disabled={busy}>Stornieren (Admin)</button>
+        <button
+          class="danger"
+          onclick={() => ask('Termin stornieren?', `${fmtRange(booking.start, booking.end)} wird durch einen Admin storniert.`, 'Stornieren', () => adminAction('cancel'))}
+          disabled={busy}
+        >Stornieren (Admin)</button>
       {/if}
       {#if booking.mine && active && !session.isManager}
-        <button class="danger" onclick={cancelOwn} disabled={busy || withinDeadline}>Stornieren</button>
+        <button
+          class="danger"
+          onclick={() => ask('Termin stornieren?', `${fmtRange(booking.start, booking.end)} wird verbindlich storniert.`, 'Stornieren', cancelOwn)}
+          disabled={busy || withinDeadline}
+        >Stornieren</button>
         {#if booking.seriesKey}
-          <button class="danger" onclick={cancelSeries} disabled={busy}>Ganze Serie stornieren</button>
+          <button
+            class="danger"
+            onclick={() => ask('Ganze Serie stornieren?', 'Alle noch stornierbaren zukünftigen Termine dieser Serie werden storniert.', 'Serie stornieren', cancelSeries)}
+            disabled={busy}
+          >Ganze Serie stornieren</button>
         {/if}
       {/if}
     </div>
@@ -180,6 +217,16 @@
     </div>
   {/if}
 </Modal>
+
+{#if confirmation}
+  <ConfirmDialog
+    title={confirmation.title}
+    message={confirmation.message}
+    confirmLabel={confirmation.label}
+    onconfirm={confirmation.action}
+    onclose={() => (confirmation = null)}
+  />
+{/if}
 
 <style>
   .buttons { margin-top: 6px; }
