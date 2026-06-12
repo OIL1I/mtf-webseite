@@ -1,5 +1,6 @@
 // Passwort-Hashing mit PBKDF2-SHA256 über WebCrypto (Workers-kompatibel).
-const ITERATIONS = 150_000;
+// Cloudflare-Produktion erlaubt maximal 100.000 PBKDF2-Iterationen (lokal gilt das Limit nicht!).
+const ITERATIONS = 100_000;
 
 function b64(buf: Uint8Array): string {
   let s = '';
@@ -32,7 +33,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
   const parts = stored.split('$');
   if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
   const iterations = parseInt(parts[1], 10);
-  if (!Number.isFinite(iterations) || iterations < 1000 || iterations > 1_000_000) return false;
+  if (!Number.isFinite(iterations) || iterations < 1000 || iterations > 100_000) return false;
   const expected = ub64(parts[3]);
   const actual = await derive(password, ub64(parts[2]), iterations);
   if (actual.length !== expected.length) return false;
