@@ -19,8 +19,12 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
 export async function getPushState(): Promise<PushState> {
   if (!supported()) return 'unsupported';
   if (Notification.permission === 'denied') return 'denied';
-  const reg = await navigator.serviceWorker.getRegistration();
-  const sub = await reg?.pushManager.getSubscription();
+  // Sicherstellen, dass der Service-Worker registriert/bereit ist – sonst meldet
+  // getRegistration() auf frisch geladener Seite fälschlich „inactive".
+  const reg = (await navigator.serviceWorker.getRegistration()) ?? (await registerServiceWorker());
+  if (!reg) return 'inactive';
+  await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
   if (!sub) return 'inactive';
   try {
     const res = await api<{ subscribed: boolean }>('/api/push/check', { body: { endpoint: sub.endpoint } });

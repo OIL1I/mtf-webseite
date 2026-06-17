@@ -37,7 +37,6 @@ import {
   notifyCommentToUser,
   notifyManagersCancellation,
   notifyManagersCheckout,
-  notifyReminder,
   notifyUserChangedByManager,
   notifyUserDecision,
   pushToUsers,
@@ -53,11 +52,9 @@ import {
   decidePendingBooking,
   vehicleWindowProblem,
 } from './booking-service';
-import { claimWaitlistOffers, offerNextWaitlistEntry, releaseExpiredWaitlistOffers } from './waitlist-service';
-import { readJson } from './http';
+import { parseId, readJson } from './http';
 import { registerPasswordRoutes } from './routes/password';
 import { registerSeriesRoutes } from './routes/series';
-import { registerWaitlistRoutes } from './routes/waitlist';
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
@@ -180,10 +177,19 @@ app.post('/api/master/users', async (c) => {
   return c.json(result.payload, result.status);
 });
 
+// Öffentliche Login-Konfiguration: sagt der Anmeldeseite, ob Passwort-Login aktiv ist
+app.get('/api/auth/config', async (c) => {
+  const features = await getFeatures(c.env.DB);
+  return c.json({ passwordsEnabled: features.passwords });
+});
+
 app.post('/api/auth/login', async (c) => {
   const body = await readJson<{ email?: string; password?: string }>(c);
   const email = body?.email?.trim().toLowerCase();
   if (!email || !body?.password) return c.json({ error: 'E-Mail und Passwort erforderlich' }, 400);
+  if (!(await getFeatures(c.env.DB)).passwords) {
+    return c.json({ error: 'Passwort-Login ist deaktiviert – bitte per Anmeldelink anmelden.' }, 403);
+  }
   if (body.password.length > 128) return c.json({ error: 'E-Mail oder Passwort ist falsch' }, 401);
   if (!(await loginRateCheck(c, email))) return c.json({ error: RATE_MSG }, 429);
   const user = await c.env.DB.prepare(
@@ -221,6 +227,14 @@ app.post('/api/auth/request-link', async (c) => {
   const body = await readJson<{ email?: string }>(c);
   const email = body?.email?.trim().toLowerCase();
   if (!email) return c.json({ error: 'E-Mail erforderlich' }, 400);
+  // Missbrauchsschutz (immer aktiv): begrenzt den Mailversand pro Adresse und IP,
+  // damit niemand fremde Postfächer mit Anmeldelinks fluten kann.
+  const ip = c.req.header('CF-Connecting-IP') ?? 'local';
+  if (!(await rateLimitOk(c.env.DB, `link:${email}`, 3, 15)) || !(await rateLimitOk(c.env.DB, `link-ip:${ip}`, 15, 15))) {
+    return c.json({ error: RATE_MSG }, 429);
+  }
+  await recordFailedAttempt(c.env.DB, `link:${email}`);
+  await recordFailedAttempt(c.env.DB, `link-ip:${ip}`);
   const user = await c.env.DB.prepare('SELECT id, name, disabled FROM users WHERE email = ?')
     .bind(email)
     .first<{ id: number; name: string; disabled: number }>();
@@ -260,10 +274,12 @@ app.post('/api/auth/verify', async (c) => {
     .bind(body.token, nowIso())
     .first<{ user_id: number; email: string; name: string; role: string; password_hash: string | null }>();
   if (!row) return c.json({ error: 'Link ist ungültig oder abgelaufen' }, 401);
+  // Token atomar entwerten – schließt Doppel-Submit (nur ein Aufruf bekommt changes=1)
+  const consumed = await c.env.DB.prepare('UPDATE login_tokens SET used = 1 WHERE token = ? AND used = 0').bind(body.token).run();
+  if (consumed.meta.changes !== 1) return c.json({ error: 'Link ist ungültig oder abgelaufen' }, 401);
   const session = randomToken();
   const resetExpiresAt = isoIn(15 * 60_000);
   await c.env.DB.batch([
-    c.env.DB.prepare('UPDATE login_tokens SET used = 1 WHERE token = ?').bind(body.token),
     c.env.DB
       .prepare(
         `INSERT INTO sessions
@@ -278,6 +294,7 @@ app.post('/api/auth/verify', async (c) => {
     token: session,
     user: { id: row.user_id, email: row.email, name: row.name, role: row.role },
     hasPassword: !!row.password_hash,
+    passwordsEnabled: (await getFeatures(c.env.DB)).passwords,
   });
 });
 
@@ -312,14 +329,15 @@ app.post('/api/telegram/webhook', async (c) => {
       )
         .bind(token, nowIso())
         .first<{ user_id: number; name: string; role: string }>();
-      const allowed = row && (row.role === 'manager' || (await getFeatures(c.env.DB)).memberTelegram);
-      if (row && allowed) {
+      if (row) {
         await c.env.DB.batch([
           c.env.DB.prepare('UPDATE telegram_link_tokens SET used = 1 WHERE token = ?').bind(token),
           c.env.DB.prepare(
             `INSERT INTO telegram_links (user_id, chat_id, username) VALUES (?, ?, ?)
              ON CONFLICT(user_id) DO UPDATE SET chat_id = excluded.chat_id, username = excluded.username`
           ).bind(row.user_id, chatId, update.message.from?.username ?? null),
+          // Alternative aktiviert → Mail-Benachrichtigungen einmalig abschalten
+          c.env.DB.prepare('UPDATE users SET email_notifications = 0 WHERE id = ?').bind(row.user_id),
         ]);
         await tg(c.env, 'sendMessage', {
           chat_id: chatId,
@@ -385,8 +403,8 @@ app.post('/api/telegram/webhook', async (c) => {
 
 app.use('/api/*', async (c, next) => {
   const path = new URL(c.req.url).pathname;
-  const open = ['/api/auth/request-link', '/api/auth/verify', '/api/auth/login', '/api/auth/master-login', '/api/telegram/webhook'];
-  if (open.includes(path) || path.startsWith('/api/master/') || path.startsWith('/api/ics/feed/')) return next();
+  const open = ['/api/auth/config', '/api/auth/request-link', '/api/auth/verify', '/api/auth/login', '/api/auth/master-login', '/api/telegram/webhook'];
+  if (open.includes(path) || path.startsWith('/api/master/')) return next();
   const auth = c.req.header('Authorization');
   const token = auth?.startsWith('Bearer ') ? auth.slice(7) : null;
   const user = token ? await getUserBySession(c.env.DB, token) : null;
@@ -402,21 +420,31 @@ const managerOnly = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (
 
 registerPasswordRoutes(app);
 registerSeriesRoutes(app);
-registerWaitlistRoutes(app);
 
 app.get('/api/me', async (c) => {
   const user = c.get('user');
-  const [link, pw] = await Promise.all([
+  const [link, row] = await Promise.all([
     c.env.DB.prepare('SELECT username FROM telegram_links WHERE user_id = ?')
       .bind(user.id)
       .first<{ username: string | null }>(),
-    c.env.DB.prepare('SELECT password_hash FROM users WHERE id = ?').bind(user.id).first<{ password_hash: string | null }>(),
+    c.env.DB.prepare('SELECT password_hash, email_notifications FROM users WHERE id = ?')
+      .bind(user.id)
+      .first<{ password_hash: string | null; email_notifications: number }>(),
   ]);
   return c.json({
     user,
     telegram: link ? { linked: true, username: link.username } : { linked: false },
-    hasPassword: !!pw?.password_hash,
+    hasPassword: !!row?.password_hash,
+    emailNotifications: (row?.email_notifications ?? 1) === 1,
   });
+});
+
+app.put('/api/me/email-notifications', async (c) => {
+  const body = await readJson<{ enabled?: boolean }>(c);
+  await c.env.DB.prepare('UPDATE users SET email_notifications = ? WHERE id = ?')
+    .bind(body?.enabled ? 1 : 0, c.get('user').id)
+    .run();
+  return c.json({ ok: true, emailNotifications: !!body?.enabled });
 });
 
 app.post('/api/auth/logout', async (c) => {
@@ -501,8 +529,7 @@ app.post('/api/bookings/checkout', async (c) => {
     seriesKey: it.seriesKey ?? null,
   }));
 
-  const features = await getFeatures(c.env.DB);
-  const vehicleId = features.vehicles && body.vehicleId ? body.vehicleId : 1;
+  const vehicleId = body.vehicleId || 1;
   const vehicle = await c.env.DB.prepare('SELECT * FROM vehicles WHERE id = ?').bind(vehicleId).first<Vehicle>();
   if (!vehicle || !vehicle.active) return c.json({ error: 'Unbekanntes oder inaktives Fahrzeug' }, 400);
 
@@ -571,7 +598,6 @@ app.post('/api/bookings/checkout', async (c) => {
     if (writeError) return c.json({ error: bookingWriteErrorMessage(writeError) }, 409);
     throw error;
   }
-  await claimWaitlistOffers(c.env.DB, user.id, vehicleId, items);
 
   const detail = await loadGroup(c.env, group.id);
   c.executionCtx.waitUntil(
@@ -590,11 +616,9 @@ app.get('/api/my/bookings', async (c) => {
   const user = c.get('user');
   const { results } = await c.env.DB.prepare(
     `SELECT b.id, b.group_id, b.start_ts, b.end_ts, b.status, b.series_key, bg.purpose, bg.driver, bg.created_at,
-            v.name AS vehicle_name, tl.km_start, tl.km_end, tl.note AS trip_note,
-            CASE WHEN tl.id IS NULL THEN 0 ELSE 1 END AS has_triplog
+            v.name AS vehicle_name
      FROM bookings b JOIN booking_groups bg ON bg.id = b.group_id
      JOIN vehicles v ON v.id = b.vehicle_id
-     LEFT JOIN trip_logs tl ON tl.booking_id = b.id
      WHERE b.user_id = ? ORDER BY b.start_ts DESC LIMIT 500`
   )
     .bind(user.id)
@@ -604,10 +628,6 @@ app.get('/api/my/bookings', async (c) => {
         driver: string;
         created_at: string;
         vehicle_name: string;
-        km_start: number | null;
-        km_end: number | null;
-        trip_note: string | null;
-        has_triplog: number;
       }
     >();
   const rules = await getRules(c.env.DB);
@@ -625,7 +645,6 @@ app.get('/api/my/bookings', async (c) => {
       vehicleName: b.vehicle_name,
       cancellable: (b.status === 'confirmed' || b.status === 'pending') && canUserCancel(b.start_ts, rules),
       started: Date.parse(b.start_ts) <= Date.now(),
-      tripLog: b.has_triplog ? { kmStart: b.km_start, kmEnd: b.km_end, note: b.trip_note } : null,
     });
   }
   return c.json({ groups: [...groups.values()], cancelDeadlineHours: rules.cancelDeadlineHours });
@@ -633,7 +652,8 @@ app.get('/api/my/bookings', async (c) => {
 
 app.post('/api/bookings/:id/cancel', async (c) => {
   const user = c.get('user');
-  const id = parseInt(c.req.param('id'), 10);
+  const id = parseId(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Ungültige ID' }, 400);
   const booking = await c.env.DB.prepare(
     `SELECT b.id, b.user_id, b.vehicle_id, b.start_ts, b.end_ts, b.status, b.series_key, bg.purpose
      FROM bookings b JOIN booking_groups bg ON bg.id = b.group_id WHERE b.id = ?`
@@ -654,7 +674,6 @@ app.post('/api/bookings/:id/cancel', async (c) => {
   c.executionCtx.waitUntil(
     notifyManagersCancellation(c.env, user.name, booking.purpose, [{ ...booking, status: 'cancelled' }])
   );
-  c.executionCtx.waitUntil(offerNextWaitlistEntry(c.env, booking.vehicle_id, booking.start_ts, booking.end_ts));
   return c.json({ ok: true });
 });
 
@@ -692,11 +711,6 @@ app.post('/api/bookings/cancel-series', async (c) => {
           changed.map((b) => ({ ...b, status: 'cancelled' }))
         )
       );
-      c.executionCtx.waitUntil(
-        (async () => {
-          for (const b of changed) await offerNextWaitlistEntry(c.env, b.vehicle_id, b.start_ts, b.end_ts);
-        })()
-      );
     }
     return c.json({ ok: true, cancelled: changed.length, skipped: results.length - changed.length });
   }
@@ -732,12 +746,14 @@ app.post('/api/push/subscribe', async (c) => {
   const user = c.get('user');
   const body = await readJson<{ endpoint?: string; keys?: { p256dh?: string; auth?: string } }>(c);
   if (!body?.endpoint || !body.keys?.p256dh || !body.keys?.auth) return c.json({ error: 'Ungültige Subscription' }, 400);
-  await c.env.DB.prepare(
-    `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)
-     ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`
-  )
-    .bind(user.id, body.endpoint, body.keys.p256dh, body.keys.auth)
-    .run();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`
+    ).bind(user.id, body.endpoint, body.keys.p256dh, body.keys.auth),
+    // Alternative aktiviert → Mail-Benachrichtigungen einmalig abschalten
+    c.env.DB.prepare('UPDATE users SET email_notifications = 0 WHERE id = ?').bind(user.id),
+  ]);
   return c.json({ ok: true });
 });
 
@@ -759,13 +775,10 @@ app.post('/api/push/check', async (c) => {
   return c.json({ subscribed: !!row });
 });
 
-// ---------- Telegram-Verknüpfung (Admins immer, Mitglieder mit Beta-Feature) ----------
+// ---------- Telegram-Verknüpfung (Admins und Mitglieder) ----------
 
 app.post('/api/telegram/link-token', async (c) => {
   if (!c.env.TELEGRAM_BOT_USERNAME) return c.json({ error: 'Telegram-Bot ist noch nicht konfiguriert' }, 400);
-  if (c.get('user').role !== 'manager' && !(await getFeatures(c.env.DB)).memberTelegram) {
-    return c.json({ error: 'Telegram für Mitglieder ist nicht aktiviert' }, 403);
-  }
   const token = randomToken(16);
   await c.env.DB.prepare('INSERT INTO telegram_link_tokens (token, user_id, expires_at) VALUES (?, ?, ?)')
     .bind(token, c.get('user').id, isoIn(15 * 60_000))
@@ -838,8 +851,10 @@ app.post('/api/admin/blackouts', managerOnly, async (c) => {
 });
 
 app.delete('/api/admin/blackouts/:id', managerOnly, async (c) => {
-  await c.env.DB.prepare('DELETE FROM blackouts WHERE id = ?').bind(parseInt(c.req.param('id'), 10)).run();
-  await audit(c.env.DB, c.get('user').name, 'Sperrzeit gelöscht', `ID ${c.req.param('id')}`);
+  const id = parseId(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Ungültige ID' }, 400);
+  await c.env.DB.prepare('DELETE FROM blackouts WHERE id = ?').bind(id).run();
+  await audit(c.env.DB, c.get('user').name, 'Sperrzeit gelöscht', `ID ${id}`);
   return c.json({ ok: true, blackouts: await getBlackouts(c.env.DB) });
 });
 
@@ -859,7 +874,9 @@ app.get('/api/admin/requests', managerOnly, async (c) => {
 app.post('/api/admin/groups/:id/decide', managerOnly, async (c) => {
   const body = await readJson<{ action?: 'approve' | 'reject' }>(c);
   if (body?.action !== 'approve' && body?.action !== 'reject') return c.json({ error: 'action erforderlich' }, 400);
-  const result = await decideGroup(c.env, parseInt(c.req.param('id'), 10), body.action, c.get('user').id);
+  const groupId = parseId(c.req.param('id'));
+  if (groupId === null) return c.json({ error: 'Ungültige ID' }, 400);
+  const result = await decideGroup(c.env, groupId, body.action, c.get('user').id);
   if (!result.ok) return c.json({ error: 'Gruppe nicht gefunden' }, 404);
   await audit(
     c.env.DB,
@@ -872,7 +889,8 @@ app.post('/api/admin/groups/:id/decide', managerOnly, async (c) => {
 
 app.patch('/api/admin/bookings/:id', managerOnly, async (c) => {
   const manager = c.get('user');
-  const id = parseInt(c.req.param('id'), 10);
+  const id = parseId(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Ungültige ID' }, 400);
   const body = await readJson<{ action?: string; start?: string; end?: string }>(c);
   const booking = await c.env.DB.prepare(
     `SELECT b.id, b.group_id, b.user_id, b.vehicle_id, b.start_ts, b.end_ts, b.status, b.series_key, bg.purpose,
@@ -894,7 +912,6 @@ app.patch('/api/admin/bookings/:id', managerOnly, async (c) => {
         notifyUserChangedByManager(c.env, owner, booking.purpose, `Termin ${fmtRange(booking.start_ts, booking.end_ts)} wurde storniert.`)
       );
     }
-    c.executionCtx.waitUntil(offerNextWaitlistEntry(c.env, booking.vehicle_id, booking.start_ts, booking.end_ts));
     await audit(c.env.DB, manager.name, 'Buchung storniert', `„${booking.purpose}" von ${owner.name}, ${fmtRange(booking.start_ts, booking.end_ts)}`);
     return c.json({ ok: true });
   }
@@ -913,9 +930,6 @@ app.patch('/api/admin/bookings/:id', managerOnly, async (c) => {
     }
     const item: NotifyItem = { start_ts: booking.start_ts, end_ts: booking.end_ts, status: newStatus, series_key: booking.series_key };
     c.executionCtx.waitUntil(notifyUserDecision(c.env, owner, booking.purpose, body.action, [item]));
-    if (body.action === 'reject') {
-      c.executionCtx.waitUntil(offerNextWaitlistEntry(c.env, booking.vehicle_id, booking.start_ts, booking.end_ts));
-    }
     return c.json({ ok: true });
   }
 
@@ -956,7 +970,7 @@ app.patch('/api/admin/bookings/:id', managerOnly, async (c) => {
       const update = await c.env.DB
         .prepare(
           `UPDATE bookings
-           SET start_ts = ?, end_ts = ?, decided_by = ?, reminded = 0
+           SET start_ts = ?, end_ts = ?, decided_by = ?
            WHERE id = ? AND status IN ('confirmed', 'pending')`
         )
         .bind(start, end, manager.id, id)
@@ -977,7 +991,6 @@ app.patch('/api/admin/bookings/:id', managerOnly, async (c) => {
         )
       );
     }
-    c.executionCtx.waitUntil(offerNextWaitlistEntry(c.env, booking.vehicle_id, booking.start_ts, booking.end_ts));
     await audit(c.env.DB, manager.name, 'Buchung verschoben', `„${booking.purpose}" → ${fmtRange(start, end)}`);
     return c.json({ ok: true });
   }
@@ -1005,7 +1018,8 @@ app.post('/api/admin/users', managerOnly, async (c) => {
 });
 
 app.patch('/api/admin/users/:id', managerOnly, async (c) => {
-  const id = parseInt(c.req.param('id'), 10);
+  const id = parseId(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Ungültige ID' }, 400);
   const body = await readJson<{ name?: string; role?: string; disabled?: boolean; licenseClasses?: string[] }>(c);
   const target = await c.env.DB.prepare('SELECT id, name, role, disabled FROM users WHERE id = ?')
     .bind(id)
@@ -1063,13 +1077,57 @@ app.get('/api/admin/status', managerOnly, async (c) => {
 // ---------- Beta-Features: Verwaltung ----------
 
 app.put('/api/admin/features', managerOnly, async (c) => {
-  const body = await readJson<Features>(c);
+  const body = await readJson<Partial<Features>>(c);
   if (!body) return c.json({ error: 'Ungültige Daten' }, 400);
   const current = await getFeatures(c.env.DB);
-  const next: Features = { ...current, ...body, reminderLeadHours: Number(body.reminderLeadHours) || current.reminderLeadHours };
+  const next: Features = { rateLimit: !!body.rateLimit, passwords: current.passwords };
   await saveFeatures(c.env.DB, next);
-  await audit(c.env.DB, c.get('user').name, 'Beta-Features geändert', JSON.stringify(next));
+  await audit(c.env.DB, c.get('user').name, 'Einstellungen geändert', JSON.stringify(next));
   return c.json({ ok: true, features: next });
+});
+
+// Globaler Passwort-Login ein/aus. Beide Richtungen löschen alle Passwörter und melden alle ab;
+// beim Einschalten bekommt jede:r aktive Nutzer:in eine „Passwort festlegen"-Mail.
+app.put('/api/admin/passwords', managerOnly, async (c) => {
+  const body = await readJson<{ enabled?: boolean }>(c);
+  const enabled = !!body?.enabled;
+  const current = await getFeatures(c.env.DB);
+  await saveFeatures(c.env.DB, { rateLimit: current.rateLimit, passwords: enabled });
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE users SET password_hash = NULL'),
+    c.env.DB.prepare('DELETE FROM sessions'),
+  ]);
+  await audit(c.env.DB, c.get('user').name, enabled ? 'Passwörter aktiviert' : 'Passwörter deaktiviert', 'Alle Passwörter zurückgesetzt, alle abgemeldet');
+  if (enabled) {
+    const { results: actives } = await c.env.DB
+      .prepare("SELECT id, email, name FROM users WHERE disabled = 0")
+      .all<{ id: number; email: string; name: string }>();
+    c.executionCtx.waitUntil(
+      (async () => {
+        for (const u of actives) {
+          const token = randomToken();
+          await c.env.DB.prepare('INSERT INTO login_tokens (token, user_id, expires_at) VALUES (?, ?, ?)')
+            .bind(token, u.id, isoIn(15 * 60_000))
+            .run();
+          const link = `${c.env.SITE_URL}#/login?token=${token}`;
+          await sendEmail(
+            c.env,
+            u.email,
+            'Lege dein Passwort für die MTF-Buchung fest',
+            emailLayout(
+              'Passwort festlegen',
+              `<p>Hallo ${escapeHtml(u.name)},</p>
+               <p>für die MTF-Buchung ist ab sofort ein Passwort-Login aktiv. Lege über diesen Link dein
+               Passwort fest (15 Minuten gültig):</p>
+               <p><a href="${link}" style="display:inline-block;background:#a32d2d;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;">Passwort festlegen</a></p>
+               <p style="font-size:13px;color:#777;">Du kannst dich auch weiterhin jederzeit per Anmeldelink ohne Passwort anmelden.</p>`
+            )
+          );
+        }
+      })()
+    );
+  }
+  return c.json({ ok: true, passwordsEnabled: enabled });
 });
 
 app.put('/api/admin/master-password', managerOnly, async (c) => {
@@ -1108,7 +1166,8 @@ app.post('/api/admin/vehicles', managerOnly, async (c) => {
 });
 
 app.patch('/api/admin/vehicles/:id', managerOnly, async (c) => {
-  const id = parseInt(c.req.param('id'), 10);
+  const id = parseId(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Ungültige ID' }, 400);
   const body = await readJson<{
     name?: string;
     active?: boolean;
@@ -1147,8 +1206,6 @@ app.patch('/api/admin/vehicles/:id', managerOnly, async (c) => {
 });
 
 app.get('/api/admin/stats', managerOnly, async (c) => {
-  const features = await getFeatures(c.env.DB);
-  if (!features.stats) return c.json({ error: 'Statistik ist nicht aktiviert' }, 403);
   const since = new Date(Date.now() - 365 * 24 * 3_600_000).toISOString();
   const hoursExpr = '(julianday(end_ts) - julianday(start_ts)) * 24.0';
   const [months, topUsers, weekdays] = await Promise.all([
@@ -1176,15 +1233,11 @@ app.get('/api/admin/stats', managerOnly, async (c) => {
 });
 
 app.get('/api/admin/audit', managerOnly, async (c) => {
-  const features = await getFeatures(c.env.DB);
-  if (!features.auditLog) return c.json({ error: 'Audit-Log ist nicht aktiviert' }, 403);
   const { results } = await c.env.DB.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 200').all();
   return c.json({ entries: results });
 });
 
 app.get('/api/admin/export.csv', managerOnly, async (c) => {
-  const features = await getFeatures(c.env.DB);
-  if (!features.csvExport) return c.json({ error: 'CSV-Export ist nicht aktiviert' }, 403);
   const { results } = await c.env.DB.prepare(
     `SELECT b.id, v.name AS vehicle, b.start_ts, b.end_ts, b.status, bg.purpose, bg.driver, u.name, u.email
      FROM bookings b JOIN booking_groups bg ON bg.id = b.group_id JOIN users u ON u.id = b.user_id
@@ -1204,48 +1257,12 @@ app.get('/api/admin/export.csv', managerOnly, async (c) => {
   });
 });
 
-app.get('/api/admin/triplogs', managerOnly, async (c) => {
-  const { results } = await c.env.DB.prepare(
-    `SELECT tl.*, u.name AS user_name, bg.purpose, b.start_ts, b.end_ts, v.name AS vehicle_name
-     FROM trip_logs tl JOIN bookings b ON b.id = tl.booking_id
-     JOIN booking_groups bg ON bg.id = b.group_id JOIN users u ON u.id = tl.user_id
-     JOIN vehicles v ON v.id = b.vehicle_id
-     ORDER BY tl.id DESC LIMIT 50`
-  ).all();
-  return c.json({ logs: results });
-});
-
-// ---------- Beta-Features: Nutzer ----------
-
-app.post('/api/bookings/:id/triplog', async (c) => {
-  const features = await getFeatures(c.env.DB);
-  if (!features.tripLog) return c.json({ error: 'Fahrtenbuch ist nicht aktiviert' }, 403);
-  const user = c.get('user');
-  const id = parseInt(c.req.param('id'), 10);
-  const body = await readJson<{ kmStart?: number; kmEnd?: number; note?: string }>(c);
-  const booking = await c.env.DB.prepare('SELECT id, user_id, start_ts FROM bookings WHERE id = ?')
-    .bind(id)
-    .first<{ id: number; user_id: number; start_ts: string }>();
-  if (!booking || (booking.user_id !== user.id && user.role !== 'manager')) {
-    return c.json({ error: 'Buchung nicht gefunden' }, 404);
-  }
-  if (body?.kmStart != null && body?.kmEnd != null && body.kmEnd < body.kmStart) {
-    return c.json({ error: 'End-Kilometerstand liegt unter dem Start' }, 400);
-  }
-  await c.env.DB.prepare(
-    `INSERT INTO trip_logs (booking_id, user_id, km_start, km_end, note) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(booking_id) DO UPDATE SET km_start = excluded.km_start, km_end = excluded.km_end, note = excluded.note`
-  )
-    .bind(id, user.id, body?.kmStart ?? null, body?.kmEnd ?? null, body?.note?.trim() || null)
-    .run();
-  return c.json({ ok: true });
-});
+// ---------- Rückfragen ----------
 
 app.get('/api/groups/:id/comments', async (c) => {
-  const features = await getFeatures(c.env.DB);
-  if (!features.comments) return c.json({ comments: [], enabled: false });
   const user = c.get('user');
-  const groupId = parseInt(c.req.param('id'), 10);
+  const groupId = parseId(c.req.param('id'));
+  if (groupId === null) return c.json({ error: 'Ungültige ID' }, 400);
   const group = await c.env.DB.prepare('SELECT user_id FROM booking_groups WHERE id = ?').bind(groupId).first<{ user_id: number }>();
   if (!group || (group.user_id !== user.id && user.role !== 'manager')) return c.json({ error: 'Nicht gefunden' }, 404);
   const { results } = await c.env.DB.prepare(
@@ -1258,10 +1275,9 @@ app.get('/api/groups/:id/comments', async (c) => {
 });
 
 app.post('/api/groups/:id/comments', async (c) => {
-  const features = await getFeatures(c.env.DB);
-  if (!features.comments) return c.json({ error: 'Rückfragen sind nicht aktiviert' }, 403);
   const user = c.get('user');
-  const groupId = parseInt(c.req.param('id'), 10);
+  const groupId = parseId(c.req.param('id'));
+  if (groupId === null) return c.json({ error: 'Ungültige ID' }, 400);
   const body = await readJson<{ text?: string }>(c);
   const text = body?.text?.trim();
   if (!text || text.length > 1000) return c.json({ error: 'Text fehlt oder ist zu lang (max. 1000 Zeichen)' }, 400);
@@ -1286,72 +1302,6 @@ app.post('/api/groups/:id/comments', async (c) => {
   return c.json({ ok: true });
 });
 
-// ---------- ICS-Kalender ----------
-
-app.post('/api/ics/enable', async (c) => {
-  const features = await getFeatures(c.env.DB);
-  if (!features.ics) return c.json({ error: 'ICS-Export ist nicht aktiviert' }, 403);
-  const user = c.get('user');
-  let row = await c.env.DB.prepare('SELECT ics_token FROM users WHERE id = ?').bind(user.id).first<{ ics_token: string | null }>();
-  if (!row?.ics_token) {
-    const token = randomToken(24);
-    await c.env.DB.prepare('UPDATE users SET ics_token = ? WHERE id = ?').bind(token, user.id).run();
-    row = { ics_token: token };
-  }
-  const apiBase = new URL(c.req.url).origin;
-  return c.json({ url: `${apiBase}/api/ics/feed/${row.ics_token}` });
-});
-
-function icsDate(iso: string): string {
-  return iso.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-}
-
-function icsEscape(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
-}
-
-app.get('/api/ics/feed/:token', async (c) => {
-  const features = await getFeatures(c.env.DB);
-  if (!features.ics) return c.text('ICS-Export ist nicht aktiviert', 403);
-  const owner = await c.env.DB.prepare('SELECT id FROM users WHERE ics_token = ? AND disabled = 0')
-    .bind(c.req.param('token'))
-    .first<{ id: number }>();
-  if (!owner) return c.text('Ungültiger Kalender-Link', 404);
-  const since = new Date(Date.now() - 30 * 24 * 3_600_000).toISOString();
-  const { results } = await c.env.DB.prepare(
-    `SELECT b.id, b.start_ts, b.end_ts, b.status, bg.purpose, u.name, v.name AS vehicle
-     FROM bookings b JOIN booking_groups bg ON bg.id = b.group_id JOIN users u ON u.id = b.user_id
-     JOIN vehicles v ON v.id = b.vehicle_id
-     WHERE b.status IN ('confirmed', 'pending') AND b.end_ts > ? ORDER BY b.start_ts LIMIT 1000`
-  )
-    .bind(since)
-    .all<{ id: number; start_ts: string; end_ts: string; status: string; purpose: string; name: string; vehicle: string }>();
-  const now = icsDate(nowIso());
-  const lines = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//MTF-Buchung//DE',
-    'CALSCALE:GREGORIAN',
-    'X-WR-CALNAME:MTF-Buchung',
-  ];
-  for (const b of results) {
-    lines.push(
-      'BEGIN:VEVENT',
-      `UID:buchung-${b.id}@mtf-buchung`,
-      `DTSTAMP:${now}`,
-      `DTSTART:${icsDate(b.start_ts)}`,
-      `DTEND:${icsDate(b.end_ts)}`,
-      `SUMMARY:${icsEscape(`${b.vehicle}: ${b.purpose} (${b.name})`)}`,
-      `STATUS:${b.status === 'confirmed' ? 'CONFIRMED' : 'TENTATIVE'}`,
-      'END:VEVENT'
-    );
-  }
-  lines.push('END:VCALENDAR');
-  return new Response(lines.join('\r\n'), {
-    headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'max-age=300' },
-  });
-});
-
 app.post('/api/admin/test-notification', managerOnly, async (c) => {
   const user = c.get('user');
   const managers = await getManagers(c.env.DB);
@@ -1368,29 +1318,6 @@ app.post('/api/admin/test-notification', managerOnly, async (c) => {
   return c.json({ ok: true, telegramChats: chats.length });
 });
 
-// Cron: verschickt Erinnerungen vor Fahrtbeginn (Beta-Feature)
-async function runReminders(env: Env): Promise<void> {
-  await releaseExpiredWaitlistOffers(env);
-  const features = await getFeatures(env.DB);
-  if (!features.reminders) return;
-  const leadMs = (features.reminderLeadHours || 2) * 3_600_000;
-  const { results } = await env.DB.prepare(
-    `SELECT b.id, b.start_ts, b.end_ts, bg.purpose, u.id AS user_id, u.email, u.name, v.name AS vehicle_name
-     FROM bookings b JOIN booking_groups bg ON bg.id = b.group_id JOIN users u ON u.id = b.user_id
-     JOIN vehicles v ON v.id = b.vehicle_id
-     WHERE b.status = 'confirmed' AND b.reminded = 0 AND b.start_ts > ? AND b.start_ts <= ?`
-  )
-    .bind(nowIso(), new Date(Date.now() + leadMs).toISOString())
-    .all<{ id: number; start_ts: string; end_ts: string; purpose: string; user_id: number; email: string; name: string; vehicle_name: string }>();
-  for (const b of results) {
-    await env.DB.prepare('UPDATE bookings SET reminded = 1 WHERE id = ?').bind(b.id).run();
-    await notifyReminder(env, { id: b.user_id, email: b.email, name: b.name }, b.purpose, b.vehicle_name, b.start_ts, b.end_ts);
-  }
-}
-
 export default {
   fetch: app.fetch,
-  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runReminders(env));
-  },
 };

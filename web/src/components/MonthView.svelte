@@ -41,19 +41,28 @@
 
   const range = $derived(visibleHourRange(appData.meta?.rules, bookings, [selectedDay]));
   const hours = $derived(Array.from({ length: range.to - range.from }, (_, i) => range.from + i));
-  const dragEnabled = $derived(!!appData.meta?.features.dragSelect);
 
-  // Drag-Auswahl (Beta): senkrecht über freie Stunden ziehen – wie in der Wochenansicht
+  // Drag-Auswahl: senkrecht über freie Stunden ziehen (Maus + Touch) – wie in der Wochenansicht
   let drag = $state<{ from: number; to: number } | null>(null);
 
   function dragStart(h: number, e: PointerEvent): void {
-    if (!dragEnabled) return;
     e.preventDefault();
     drag = { from: h, to: h };
   }
 
   function dragEnter(h: number): void {
     if (drag) drag = { ...drag, to: h };
+  }
+
+  // Auf Touch feuert pointerenter nicht auf Nachbarzellen (impliziter Pointer-Capture
+  // auf der Startzelle), daher die Zelle unter dem Finger per elementFromPoint bestimmen.
+  function dragMove(e: PointerEvent): void {
+    if (!drag) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const slot = el instanceof Element ? el.closest<HTMLElement>('.slot.free[data-h]') : null;
+    if (!slot) return;
+    const h = Number(slot.dataset.h);
+    if (Number.isFinite(h)) drag = { ...drag, to: h };
   }
 
   function dragCommit(): void {
@@ -73,11 +82,6 @@
     return h >= Math.min(drag.from, drag.to) && h <= Math.max(drag.from, drag.to);
   }
 
-  function slotClick(h: number): void {
-    if (dragEnabled) return; // wird über pointerup abgewickelt
-    cart.toggleHour(selectedDay, h, vehicleId);
-  }
-
   // Wie in WeekGrid: zusammenhängende Zeiträume werden als ein Block über das Stundenraster gelegt.
   function blockStyle(topH: number, heightH: number): string {
     const top = (Math.max(topH, range.from) - range.from) * HOUR_H;
@@ -86,7 +90,7 @@
   }
 </script>
 
-<svelte:window onpointerup={dragCommit} />
+<svelte:window onpointerup={dragCommit} onpointermove={dragMove} />
 
 <div class="layout">
   <div class="card month">
@@ -127,7 +131,7 @@
             <button
               class="slot free"
               class:drag-sel={inDrag(h)}
-              onclick={() => slotClick(h)}
+              data-h={h}
               onpointerdown={(e) => dragStart(h, e)}
               onpointerenter={() => dragEnter(h)}
               aria-label={`${h}:00 Uhr in den Korb legen`}
@@ -264,7 +268,7 @@
     display: flex;
     align-items: center;
   }
-  .slot.free { background: transparent; cursor: pointer; }
+  .slot.free { background: transparent; cursor: pointer; touch-action: none; }
   .slot.free .plus { opacity: 0; color: var(--accent); font-weight: 600; margin: 0 auto; }
   .slot.free:hover { background: var(--accent-soft); }
   .slot.free:hover .plus { opacity: 1; }

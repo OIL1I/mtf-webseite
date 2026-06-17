@@ -1,38 +1,35 @@
 import type { MtfApp } from '../app-types';
-import { nowIso } from '../db';
+import { getFeatures, nowIso } from '../db';
 import { readJson } from '../http';
 import { hashPassword, verifyPassword } from '../password';
 
 export function registerPasswordRoutes(app: MtfApp): void {
   app.post('/api/auth/set-password', async (c) => {
+    if (!(await getFeatures(c.env.DB)).passwords) {
+      return c.json({ error: 'Passwort-Login ist deaktiviert' }, 400);
+    }
     const body = await readJson<{ password?: string }>(c);
     if (!body?.password || body.password.length < 8 || body.password.length > 128) {
       return c.json({ error: 'Das Passwort muss 8 bis 128 Zeichen lang sein' }, 400);
     }
     const auth = c.req.header('Authorization');
     const token = auth?.startsWith('Bearer ') ? auth.slice(7) : '';
-    const resetSession = await c.env.DB
+    // Reset-Berechtigung atomar entwerten: nur wenn noch erlaubt und nicht abgelaufen
+    const consumed = await c.env.DB
       .prepare(
-        `SELECT password_reset_allowed
-         FROM sessions
+        `UPDATE sessions
+         SET password_reset_allowed = 0, password_reset_expires_at = NULL, expires_at = ?
          WHERE token = ? AND user_id = ? AND expires_at > ?
-           AND password_reset_expires_at > ?`
+           AND password_reset_allowed = 1 AND password_reset_expires_at > ?`
       )
-      .bind(token, c.get('user').id, nowIso(), nowIso())
-      .first<{ password_reset_allowed: number }>();
-    if (!resetSession?.password_reset_allowed) {
+      .bind(new Date(Date.now() + 90 * 24 * 3_600_000).toISOString(), token, c.get('user').id, nowIso(), nowIso())
+      .run();
+    if (consumed.meta.changes !== 1) {
       return c.json({ error: 'Zum Zurücksetzen des Passworts ist ein neuer Anmeldelink erforderlich' }, 403);
     }
     await c.env.DB.batch([
       c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?').bind(await hashPassword(body.password), c.get('user').id),
       c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?').bind(c.get('user').id, token),
-      c.env.DB
-        .prepare(
-          `UPDATE sessions
-           SET password_reset_allowed = 0, password_reset_expires_at = NULL, expires_at = ?
-           WHERE token = ?`
-        )
-        .bind(new Date(Date.now() + 90 * 24 * 3_600_000).toISOString(), token),
     ]);
     return c.json({ ok: true });
   });

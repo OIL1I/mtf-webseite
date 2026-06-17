@@ -6,7 +6,6 @@ import { readJson } from '../http';
 import { notifyManagersCheckout, notifyUserChangedByManager, type NotifyItem } from '../notify';
 import { canUserCancel, validateCheckout } from '../rules';
 import { loadGroup } from '../service';
-import { claimWaitlistOffers, offerNextWaitlistEntry } from '../waitlist-service';
 
 export function registerSeriesRoutes(app: MtfApp): void {
   app.put('/api/bookings/series', async (c) => {
@@ -119,7 +118,6 @@ export function registerSeriesRoutes(app: MtfApp): void {
       throw error;
     }
 
-    await claimWaitlistOffers(c.env.DB, currentItems[0].user_id, vehicleId, items);
     const newNotifyItems: NotifyItem[] = validation.items.map((item) => ({
       start_ts: item.start,
       end_ts: item.end,
@@ -146,13 +144,6 @@ export function registerSeriesRoutes(app: MtfApp): void {
         })
       );
     }
-    c.executionCtx.waitUntil(
-      (async () => {
-        for (const item of currentItems) {
-          await offerNextWaitlistEntry(c.env, item.vehicle_id, item.start_ts, item.end_ts);
-        }
-      })()
-    );
     await audit(
       c.env.DB,
       user.name,

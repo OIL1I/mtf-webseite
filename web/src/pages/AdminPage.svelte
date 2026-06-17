@@ -9,25 +9,12 @@
   import StatsTab from '../components/admin/StatsTab.svelte';
   import AuditTab from '../components/admin/AuditTab.svelte';
 
-  type Tab = 'anfragen' | 'regeln' | 'nutzer' | 'kanaele' | 'beta' | 'fahrzeuge' | 'statistik' | 'audit';
+  type Tab = 'anfragen' | 'regeln' | 'nutzer' | 'kanaele' | 'sicherheit' | 'fahrzeuge' | 'statistik' | 'audit';
   let tab = $state<Tab>('anfragen');
   let requestCount = $state<number | null>(null);
 
-  const features = $derived(appData.meta?.features ?? null);
-
   $effect(() => {
     appData.load();
-  });
-
-  $effect(() => {
-    // Falls ein Feature-Tab nach dem Ausschalten noch offen ist → zurück zu Anfragen
-    if (
-      (tab === 'fahrzeuge' && !features?.vehicles) ||
-      (tab === 'statistik' && !features?.stats) ||
-      (tab === 'audit' && !features?.auditLog)
-    ) {
-      tab = 'anfragen';
-    }
   });
 </script>
 
@@ -40,16 +27,10 @@
   <button role="tab" class:active={tab === 'regeln'} onclick={() => (tab = 'regeln')}>Regeln</button>
   <button role="tab" class:active={tab === 'nutzer'} onclick={() => (tab = 'nutzer')}>Nutzer</button>
   <button role="tab" class:active={tab === 'kanaele'} onclick={() => (tab = 'kanaele')}>Benachrichtigungen</button>
-  {#if features?.vehicles}
-    <button role="tab" class:active={tab === 'fahrzeuge'} onclick={() => (tab = 'fahrzeuge')}>Fahrzeuge</button>
-  {/if}
-  {#if features?.stats}
-    <button role="tab" class:active={tab === 'statistik'} onclick={() => (tab = 'statistik')}>Statistik</button>
-  {/if}
-  {#if features?.auditLog}
-    <button role="tab" class:active={tab === 'audit'} onclick={() => (tab = 'audit')}>Audit-Log</button>
-  {/if}
-  <button role="tab" class="beta-tab" class:active={tab === 'beta'} onclick={() => (tab = 'beta')}>🧪 Beta</button>
+  <button role="tab" class:active={tab === 'fahrzeuge'} onclick={() => (tab = 'fahrzeuge')}>Fahrzeuge</button>
+  <button role="tab" class:active={tab === 'statistik'} onclick={() => (tab = 'statistik')}>Statistik</button>
+  <button role="tab" class:active={tab === 'audit'} onclick={() => (tab = 'audit')}>Audit-Log</button>
+  <button role="tab" class="beta-tab" class:active={tab === 'sicherheit'} onclick={() => (tab = 'sicherheit')}>🛡 Sicherheit</button>
 </div>
 
 {#if tab === 'anfragen'}
@@ -66,7 +47,7 @@
   <StatsTab />
 {:else if tab === 'audit'}
   <AuditTab />
-{:else if tab === 'beta'}
+{:else if tab === 'sicherheit'}
   {#if appData.meta}<BetaTab />{:else}<p class="muted">Lade Einstellungen…</p>{/if}
 {/if}
 

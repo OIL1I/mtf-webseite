@@ -1,6 +1,5 @@
 import type { Env, BookingStatus } from './types';
 import { notifyUserDecision, type NotifyItem } from './notify';
-import { offerNextWaitlistEntry } from './waitlist-service';
 
 export interface GroupDetail {
   id: number;
@@ -87,12 +86,6 @@ export async function decideGroup(
     .filter((item) => changedIds.has(item.id))
     .map((it) => ({ ...it, status: newStatus }));
   await notifyUserDecision(env, group.owner, group.purpose, action, decidedItems);
-  if (action === 'reject') {
-    const rejected = pending.filter((item) => changedIds.has(item.id));
-    for (const item of rejected) {
-      await offerNextWaitlistEntry(env, item.vehicle_id, item.start_ts, item.end_ts);
-    }
-  }
 
   const refreshed = await loadGroup(env, groupId);
   return { ok: true, changed: changedIds.size, group: refreshed ?? group };

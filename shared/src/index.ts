@@ -3,7 +3,6 @@ export type Role = 'member' | 'manager';
 export const LICENSE_CLASSES = ['B', 'B96', 'BE', 'C1', 'C1E', 'C', 'CE', 'D1', 'D1E', 'D', 'DE'] as const;
 export type LicenseClass = (typeof LICENSE_CLASSES)[number];
 export type BookingStatus = 'confirmed' | 'pending' | 'rejected' | 'cancelled';
-export type WaitlistStatus = 'waiting' | 'offered' | 'claimed' | 'expired';
 
 export interface User {
   id: number;
@@ -40,20 +39,10 @@ export interface Rules {
 }
 
 export interface Features {
-  reminders: boolean;
-  reminderLeadHours: number;
-  memberTelegram: boolean;
-  tripLog: boolean;
-  waitlist: boolean;
-  vehicles: boolean;
-  stats: boolean;
-  dragSelect: boolean;
-  ics: boolean;
-  comments: boolean;
+  /** Login-Rate-Limit: bremst Passwort-Raten (5 Fehlversuche/15 Min je Konto). */
   rateLimit: boolean;
-  auditLog: boolean;
-  csvExport: boolean;
-  offlineCache: boolean;
+  /** Globaler Passwort-Login. Aus = Anmeldung nur per Anmeldelink (Mail). */
+  passwords: boolean;
 }
 
 export interface Vehicle {
@@ -156,12 +145,6 @@ export interface SeriesUpdateRequest {
   items: CheckoutItem[];
 }
 
-export interface TripLog {
-  kmStart: number | null;
-  kmEnd: number | null;
-  note: string | null;
-}
-
 export interface MyBookingItem {
   id: number;
   start: string;
@@ -171,16 +154,6 @@ export interface MyBookingItem {
   vehicleName: string;
   cancellable: boolean;
   started: boolean;
-  tripLog: TripLog | null;
-}
-
-export interface WaitlistEntry {
-  id: number;
-  start_ts: string;
-  end_ts: string;
-  vehicle_name: string;
-  status: WaitlistStatus;
-  offered_until: string | null;
 }
 
 export interface Comment {

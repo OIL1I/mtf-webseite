@@ -3,6 +3,7 @@
   import { appData } from '../lib/appdata.svelte';
   import { session } from '../lib/session.svelte';
   import { disablePush, enablePush, getPushState, type PushState } from '../lib/push';
+  import Toggle from '../components/Toggle.svelte';
 
   let pushState = $state<PushState | 'loading'>('loading');
   let pushError = $state<string | null>(null);
@@ -11,14 +12,21 @@
   let telegram = $state<{ linked: boolean; username: string | null } | null>(null);
   let tgError = $state<string | null>(null);
   let tgStarted = $state(false);
+  let emailNotifications = $state(true);
 
   async function refreshMe(): Promise<void> {
     try {
-      const res = await api<{ telegram: { linked: boolean; username: string | null } }>('/api/me');
+      const res = await api<{ telegram: { linked: boolean; username: string | null }; emailNotifications: boolean }>('/api/me');
       telegram = res.telegram;
+      emailNotifications = res.emailNotifications;
     } catch {
       telegram = null;
     }
+  }
+
+  async function saveEmailPref(enabled: boolean): Promise<void> {
+    emailNotifications = enabled;
+    await api('/api/me/email-notifications', { method: 'PUT', body: { enabled } }).catch(() => undefined);
   }
 
   $effect(() => {
@@ -26,9 +34,6 @@
     getPushState().then((s) => (pushState = s));
     refreshMe();
   });
-
-  /** Telegram-Bereich: Admins immer, Mitglieder nur mit Beta-Feature. */
-  const tgVisible = $derived(session.isManager || !!appData.meta?.features.memberTelegram);
 
   async function onEnablePush(): Promise<void> {
     pushError = null;
@@ -41,6 +46,7 @@
     try {
       pushState = await enablePush(key);
       if (pushState === 'denied') pushError = 'Benachrichtigungen wurden im Browser blockiert – bitte in den Website-Einstellungen erlauben.';
+      else if (pushState === 'active') await refreshMe();
     } catch (e) {
       pushError = e instanceof Error ? e.message : 'Aktivieren fehlgeschlagen';
     } finally {
@@ -73,32 +79,6 @@
     await api('/api/telegram/unlink', { body: {} }).catch(() => undefined);
     tgStarted = false;
     await refreshMe();
-  }
-
-  // ICS-Kalender-Abo (Beta)
-  let icsUrl = $state<string | null>(null);
-  let icsError = $state<string | null>(null);
-  let icsCopied = $state(false);
-
-  async function enableIcs(): Promise<void> {
-    icsError = null;
-    try {
-      const res = await api<{ url: string }>('/api/ics/enable', { body: {} });
-      icsUrl = res.url;
-    } catch (e) {
-      icsError = e instanceof Error ? e.message : 'Erzeugen fehlgeschlagen';
-    }
-  }
-
-  async function copyIcs(): Promise<void> {
-    if (!icsUrl) return;
-    try {
-      await navigator.clipboard.writeText(icsUrl);
-      icsCopied = true;
-      setTimeout(() => (icsCopied = false), 2000);
-    } catch {
-      icsError = 'Kopieren nicht möglich – bitte manuell markieren.';
-    }
   }
 
   let currentPw = $state('');
@@ -206,8 +186,19 @@
   <p class="small muted">ℹ Auf dem iPhone klappt das ab iOS 16.4 – nur über die installierte Home-Bildschirm-App, nicht im normalen Safari-Tab. Push-Mitteilungen auf iOS zeigen keine Aktions-Knöpfe; ein Tipp darauf öffnet direkt die richtige Seite.</p>
 </div>
 
-{#if tgVisible}
-  <div class="card section">
+<div class="card section">
+  <div class="row head">
+    <h2>✉ E-Mail-Benachrichtigungen</h2>
+    <Toggle checked={emailNotifications} onchange={saveEmailPref} label="E-Mail-Benachrichtigungen" />
+  </div>
+  <p class="small muted">
+    Bescheide zu deinen Buchungen (Bestätigung, Änderung, Antworten) kommen per E-Mail. Anmeldelinks und
+    Einladungen werden davon nicht berührt. Der Schalter wird automatisch ausgeschaltet, sobald du Web-Push
+    oder Telegram aktivierst – du kannst ihn jederzeit wieder einschalten.
+  </p>
+</div>
+
+<div class="card section">
     <div class="row head">
       <h2>✈ Telegram verbinden</h2>
       {#if session.isManager}<span class="badge red">Admin-Konto</span>{/if}
@@ -229,9 +220,7 @@
       <ul class="tg-list small muted">
         <li>✅ / ❌ <strong>Bescheid</strong>, sobald ein Admin deine Buchung bestätigt oder ablehnt – mit Zweck und Terminliste</li>
         <li>✏️ <strong>Änderungen</strong>, wenn ein Admin deine Buchung anpasst</li>
-        {#if appData.meta?.features.comments}<li>💬 <strong>Antworten</strong> von Admins auf deine Rückfragen</li>{/if}
-        {#if appData.meta?.features.waitlist}<li>🔔 <strong>Warteliste:</strong> wenn ein vorgemerkter Zeitraum frei wird</li>{/if}
-        {#if appData.meta?.features.reminders}<li>⏰ <strong>Erinnerung</strong> vor Fahrtbeginn</li>{/if}
+        <li>💬 <strong>Antworten</strong> von Admins auf deine Rückfragen</li>
       </ul>
       <div class="tg-sample small">
         <span class="muted">Beispiel-Nachricht:</span><br />
@@ -252,39 +241,21 @@
     {#if tgError}<div class="note red">{tgError}</div>{/if}
     <p class="small muted">🔒 Der Link ist 15 Minuten gültig, nur einmal nutzbar und funktioniert nur für dein eigenes Konto. Trennen jederzeit hier möglich.</p>
   </div>
-{/if}
 
-{#if appData.meta?.features.ics}
+{#if appData.meta?.features.passwords}
   <div class="card section">
-    <h2>📅 Kalender abonnieren (ICS)</h2>
-    <p class="small muted">
-      Binde die MTF-Belegung als abonnierten Kalender in Google/Outlook/Apple ein. Der Link ist persönlich – nicht weitergeben.
-    </p>
-    {#if icsUrl}
-      <div class="row">
-        <input class="ics-url" readonly value={icsUrl} onfocus={(e) => (e.currentTarget as HTMLInputElement).select()} />
-        <button onclick={copyIcs}>{icsCopied ? '✓ Kopiert' : 'Kopieren'}</button>
-      </div>
-      <p class="small muted">In der Kalender-App: „Kalender abonnieren" / „Per URL hinzufügen" und den Link einfügen.</p>
-    {:else}
-      <button class="primary" onclick={enableIcs}>Persönlichen Kalender-Link erzeugen</button>
-    {/if}
-    {#if icsError}<div class="note red">{icsError}</div>{/if}
+    <h2>🔒 Passwort ändern</h2>
+    <p class="small muted">Zur Sicherheit wird dein aktuelles Passwort geprüft. Andere offene Sitzungen werden beendet.</p>
+    <form class="pw-form" onsubmit={changePassword}>
+      <input type="password" bind:value={currentPw} placeholder="Aktuelles Passwort" required maxlength="128" autocomplete="current-password" />
+      <input type="password" bind:value={pw1} placeholder="Neues Passwort (8–128 Zeichen)" required minlength="8" maxlength="128" autocomplete="new-password" />
+      <input type="password" bind:value={pw2} placeholder="Wiederholen" required maxlength="128" autocomplete="new-password" />
+      <button class="primary" disabled={pwBusy}>{pwBusy ? 'Speichert…' : 'Ändern'}</button>
+    </form>
+    {#if pwNote}<div class="note green">{pwNote}</div>{/if}
+    {#if pwError}<div class="note red">{pwError}</div>{/if}
   </div>
 {/if}
-
-<div class="card section">
-  <h2>🔒 Passwort ändern</h2>
-  <p class="small muted">Zur Sicherheit wird dein aktuelles Passwort geprüft. Andere offene Sitzungen werden beendet.</p>
-  <form class="pw-form" onsubmit={changePassword}>
-    <input type="password" bind:value={currentPw} placeholder="Aktuelles Passwort" required maxlength="128" autocomplete="current-password" />
-    <input type="password" bind:value={pw1} placeholder="Neues Passwort (8–128 Zeichen)" required minlength="8" maxlength="128" autocomplete="new-password" />
-    <input type="password" bind:value={pw2} placeholder="Wiederholen" required maxlength="128" autocomplete="new-password" />
-    <button class="primary" disabled={pwBusy}>{pwBusy ? 'Speichert…' : 'Ändern'}</button>
-  </form>
-  {#if pwNote}<div class="note green">{pwNote}</div>{/if}
-  {#if pwError}<div class="note red">{pwError}</div>{/if}
-</div>
 
 <div class="card section">
   <h2>❓ Kurz erklärt</h2>
@@ -293,7 +264,7 @@
     <li><strong>Was heißt „wartet auf Freigabe"?</strong> Je nach Regeln (lange, kurzfristige oder Serien-Buchungen) muss ein Admin zustimmen. Der Slot ist solange für andere geblockt.</li>
     <li><strong>Wie storniere ich?</strong> Unter „Meine Buchungen" – einzeln oder die ganze Serie, bis zur Stornofrist. Danach hilft ein Admin.</li>
     <li><strong>Wer kann buchen?</strong> Nur freigeschaltete Mitglieder. Admins laden neue Personen in der Verwaltung ein; neue Konten lassen sich auch über den Verwaltungszugang mit Master-Passwort anlegen.</li>
-    <li><strong>Passwort vergessen?</strong> Auf der Anmeldeseite „Anmeldelink anfordern" – nach dem Klick auf den Link legst du ein neues Passwort fest.</li>
+    <li><strong>Wie melde ich mich an?</strong> Auf der Anmeldeseite „Anmeldelink anfordern" – du bekommst einen Link per E-Mail. Ist der Passwort-Login aktiv, legst du danach ein Passwort fest und kannst dich künftig damit anmelden.</li>
   </ul>
 </div>
 
@@ -351,12 +322,6 @@
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
-  }
-  .ics-url {
-    flex: 1;
-    min-width: 240px;
-    font-size: 12px;
-    font-family: monospace;
   }
   .pw-form input { flex: 1; min-width: 180px; }
   .faq { list-style: none; padding: 0; margin: 0; }

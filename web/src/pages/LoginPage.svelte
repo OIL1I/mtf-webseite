@@ -15,7 +15,14 @@
   let error = $state<string | null>(null);
   let hint = $state<string | null>(null);
   let verifying = $state(false);
+  let passwordsEnabled = $state(false);
   let triedToken = '';
+
+  $effect(() => {
+    api<{ passwordsEnabled: boolean }>('/api/auth/config')
+      .then((res) => (passwordsEnabled = res.passwordsEnabled))
+      .catch(() => undefined);
+  });
 
   $effect(() => {
     const token = router.query.get('token');
@@ -23,11 +30,15 @@
       triedToken = token;
       verifying = true;
       error = null;
-      api<{ token: string; user: User; hasPassword: boolean }>('/api/auth/verify', { body: { token } })
+      api<{ token: string; user: User; hasPassword: boolean; passwordsEnabled: boolean }>('/api/auth/verify', { body: { token } })
         .then((res) => {
           session.set(res.token, res.user);
-          mode = 'setpw';
-          router.go('/login');
+          if (res.passwordsEnabled) {
+            mode = 'setpw';
+            router.go('/login');
+          } else {
+            router.go('/kalender');
+          }
         })
         .catch((e) => {
           error = e instanceof Error ? e.message : 'Anmeldung fehlgeschlagen';
@@ -123,13 +134,13 @@
     {:else if mode === 'sent'}
       <div class="note green">
         Wenn deine E-Mail-Adresse freigeschaltet ist, liegt jetzt ein Anmeldelink in deinem Postfach (15 Minuten gültig).
-        Nach dem Klick legst du dein Passwort fest.
+        {#if passwordsEnabled}Nach dem Klick legst du dein Passwort fest.{/if}
       </div>
       {#if devLink}
         <p class="small"><a href={devLink}>Entwicklungsmodus: direkt anmelden →</a></p>
       {/if}
       <button class="ghost" onclick={() => (mode = 'login')}>Zurück zur Anmeldung</button>
-    {:else}
+    {:else if passwordsEnabled}
       <form onsubmit={login}>
         <input type="email" bind:value={email} placeholder="deine@email.de" required autocomplete="email" />
         <input type="password" bind:value={password} placeholder="Passwort" required maxlength="128" autocomplete="current-password" />
@@ -142,20 +153,24 @@
         </button>
       </div>
       <p class="small muted">Buchen können nur freigeschaltete Mitglieder – frag im Zweifel einen Admin.</p>
+    {:else}
+      <form onsubmit={(e) => { e.preventDefault(); requestLink(); }}>
+        <input type="email" bind:value={email} placeholder="deine@email.de" required autocomplete="email" />
+        <button class="primary" disabled={busy}>{busy ? 'Sende…' : 'Anmeldelink anfordern'}</button>
+      </form>
+      <p class="small muted">Du bekommst einen Anmeldelink per E-Mail. Buchen können nur freigeschaltete Mitglieder – frag im Zweifel einen Admin.</p>
     {/if}
 
     {#if error}<div class="note red">{error}</div>{/if}
-
-    {#if mode === 'login' && !verifying}
-      <p class="master-link small"><a href="#/master">Verwaltungszugang (Konten anlegen)</a></p>
-    {/if}
   </div>
+  <p class="legal-link small"><a href="#/impressum">Impressum &amp; Datenschutz</a></p>
 </div>
 
 <style>
   .wrap {
     min-height: 100dvh;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     padding: 20px;
@@ -166,6 +181,8 @@
     text-align: center;
     padding: 28px 26px;
   }
+  .legal-link { margin-top: 16px; }
+  .legal-link a { color: var(--muted); }
   .logo {
     height: 86px;
     width: auto;
@@ -183,10 +200,4 @@
   .alt { margin-top: 10px; }
   .alt button { font-size: 13px; }
   .note { margin-top: 10px; text-align: left; }
-  .master-link {
-    margin-top: 18px;
-    border-top: 1px solid var(--border);
-    padding-top: 10px;
-  }
-  .master-link a { color: var(--muted); }
 </style>

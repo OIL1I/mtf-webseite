@@ -16,13 +16,16 @@ konfigurierbarem Freigabe-Workflow und Benachrichtigungen per **Telegram-Bot**, 
 
 Rollen: **Mitglied** (buchen, eigene Buchungen stornieren) und **Admin**
 (Anfragen freigeben, jede Buchung ändern/stornieren, Regeln & Nutzer verwalten).
-Anmeldung nur für vorab angelegte E-Mail-Adressen (geschlossene Liste):
-Erstanmeldung per Magic-Link, dabei wird ein **Passwort** festgelegt – danach Login mit
-E-Mail + Passwort (PBKDF2-gehasht). „Passwort vergessen" läuft wieder über den Magic-Link.
+Anmeldung nur für vorab angelegte E-Mail-Adressen (geschlossene Liste): standardmäßig per
+**Anmeldelink (Magic-Link)** ohne Passwort. Optional lässt sich unter **Verwaltung → 🛡 Sicherheit**
+ein **globaler Passwort-Login** aktivieren (PBKDF2-gehasht); dann legt jede:r per Anmeldelink ein
+Passwort fest und meldet sich danach mit E-Mail + Passwort an – der Anmeldelink bleibt der Reset-Weg.
+Das Umschalten setzt alle Passwörter zurück und meldet alle ab.
 
 Zusätzlich gibt es den **Verwaltungszugang** unter `#/master` (Master-Passwort als Worker-Secret):
 Er kann ausschließlich Konten anlegen und die Kontoliste lesen – nichts löschen, keine Buchungen
-sehen, keine Benachrichtigungen empfangen. Damit wird der erste Admin ohne Kommandozeile angelegt.
+sehen, keine Benachrichtigungen empfangen. Die Seite ist **nur über die direkte URL `#/master`**
+erreichbar (kein Link in der Oberfläche). Damit wird der erste Admin ohne Kommandozeile angelegt.
 
 ## Lokal entwickeln
 
@@ -44,8 +47,8 @@ Master-Passwort aus [worker/.dev.vars](worker/.dev.vars.example) anmelden
 (Standard lokal: `feuerwehr-master`), dann ein Admin-Konto anlegen.
 
 Anschließend auf der Login-Seite **„Anmeldelink anfordern"** – im DEV_MODE erscheint der
-Link direkt auf der Seite (es wird keine echte Mail verschickt). Nach dem Klick legst du
-dein Passwort fest und meldest dich künftig damit an.
+Link direkt auf der Seite (es wird keine echte Mail verschickt). Ein Klick meldet dich an; ein
+Passwort wird nur verlangt, wenn der Passwort-Login aktiviert ist.
 
 ## Produktion einrichten
 
@@ -58,9 +61,15 @@ npx wrangler d1 create mtf-db        # die ausgegebene database_id in wrangler.t
 npm run db:init:remote               # Schema + Standard-Regeln einspielen
 ```
 
-Bei einer bereits bestehenden Datenbank stattdessen vor dem Worker-Deploy die ausstehenden
-Migrationen anwenden. Der Befehl installiert anschließend automatisch die
-Datenbank-Trigger über den D1-Dateiimport:
+`schema.sql` ist der **vollständige aktuelle Stand** (Tabellen, Trigger, Standard-Einstellungen)
+und markiert die bereits eingearbeiteten Migrationen (0001–0007) als angewandt. Ein anschließendes
+`wrangler d1 migrations apply` meldet daher korrekt „No migrations to apply". Die historischen
+Migrationen dürfen **nicht** einzeln auf eine frische schema.sql-DB angewendet werden – sie setzen
+teils längst entfernte Objekte (z.B. die alte `waitlist`-Tabelle) voraus. Genau dieser Weg gilt auch
+für Disaster-Recovery: neue DB anlegen → `db:init:remote`.
+
+Eine bereits **bestehende** Datenbank wird stattdessen inkrementell aktualisiert (wendet nur neue
+Migrationen an und spielt anschließend die Trigger über den D1-Dateiimport ein):
 
 ```bash
 cd worker
@@ -79,9 +88,8 @@ npx wrangler secret put RESEND_API_KEY        # von resend.com (kostenlos bis 10
 npx wrangler deploy                            # → https://mtf-api.DEIN-ACCOUNT.workers.dev
 ```
 
-Ersten Admin anlegen: Webseite öffnen → unten auf der Login-Seite
-**„Verwaltungszugang"** → Master-Passwort eingeben → Admin-Konto anlegen.
-Die Person fordert dann einen Anmeldelink an und legt ihr Passwort fest.
+Ersten Admin anlegen: im Browser direkt **`#/master`** öffnen (kein Link in der Oberfläche) →
+Master-Passwort eingeben → Admin-Konto anlegen. Die Person fordert danach einen Anmeldelink an.
 
 > **E-Mail-Hinweis:** `onboarding@resend.dev` als Absender funktioniert nur an die eigene
 > Resend-Konto-Adresse. Für alle anderen Empfänger eine eigene Domain bei Resend
@@ -123,28 +131,26 @@ Admins verknüpfen sich danach selbst über **Hilfe → „Telegram verbinden"**
    `https://mtf-api.DEIN-ACCOUNT.workers.dev` anlegen.
 4. Push auf `main` → der Workflow [.github/workflows/deploy.yml](.github/workflows/deploy.yml) baut und veröffentlicht die Seite.
 
-## Beta-Features (Verwaltung → 🧪 Beta)
+## Funktionsumfang
 
-Alle Zusatzfunktionen sind einzeln schaltbar (standardmäßig aus) und serverseitig gesperrt, solange sie deaktiviert sind:
+Feste Bestandteile (immer aktiv): **mehrere/temporäre Fahrzeuge** (Leihwagen mit
+Verfügbarkeitsfenster, je eigener Kalender), **Statistik** (Stunden/Monat, Top-Nutzer,
+Wochentags-Auslastung, CSV-Export), **Drag-Auswahl** im Wochen- und Monatsraster (Maus + Touch),
+**Rückfragen** (Frage/Antwort-Thread je Buchung), **Audit-Log** (Protokoll aller
+Verwaltungs-Aktionen) und **Telegram für Mitglieder** (Bescheide per Bot, auf der Hilfe-Seite
+verknüpfbar). Jede:r Nutzer:in kann **E-Mail-Benachrichtigungen** unter „Hilfe" abschalten (wird
+automatisch deaktiviert, sobald Web-Push oder Telegram aktiviert wird).
 
-| Feature | Beschreibung |
+Unter **Verwaltung → 🛡 Sicherheit** schaltbar:
+
+| Schalter | Beschreibung |
 |---|---|
-| Erinnerungen | Push/Telegram/E-Mail vor Fahrtbeginn (Vorlauf einstellbar, Cron alle 15 Min.) |
-| Fahrtenbuch | km-Stand & Bemerkung je Fahrt unter „Meine Buchungen", Übersicht im Statistik-Tab |
-| Warteliste | Bei belegten Slots eintragen, automatische Benachrichtigung bei Stornierung |
-| Mehrere Fahrzeuge | Weitere + temporäre Fahrzeuge (Leihwagen) mit Verfügbarkeitsfenster, je eigener Kalender |
-| Statistik | Stunden/Monat, Top-Nutzer, Wochentags-Auslastung |
-| Drag-Auswahl | Stunden im Wochenraster aufziehen statt einzeln klicken |
-| ICS-Kalender-Abo | Persönlicher Abo-Link für Google/Outlook/Apple (Hilfe-Seite) |
-| Rückfragen | Frage/Antwort-Thread an jeder Buchung (Admin ↔ buchende Person) |
 | Login-Rate-Limit | Max. 5 Fehlversuche pro Konto in 15 Minuten |
-| Audit-Log | Protokoll aller Verwaltungs-Aktionen |
-| CSV-Export | Alle Buchungen als CSV (Statistik-Tab) |
-| Offline-Ansicht | Letzter Kalenderstand auch ohne Empfang |
+| Passwörter global | Aktiviert den Passwort-Login zusätzlich zum Anmeldelink (siehe oben) |
 
-Außerdem: Das Master-Passwort kann von Admins unter 🧪 Beta geändert werden (gilt sofort,
-ersetzt das Secret aus der Server-Konfiguration). Einmalige Sperrzeiten verschwinden nach
-Ablauf automatisch aus Verwaltung und Kalender.
+Dort lässt sich außerdem das **Master-Passwort** ändern (gilt sofort, ersetzt das Secret aus der
+Server-Konfiguration). Einmalige Sperrzeiten verschwinden nach Ablauf automatisch aus Verwaltung
+und Kalender.
 
 ## Führerscheinklassen & Fahrer-Auswahl
 

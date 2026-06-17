@@ -1,9 +1,8 @@
 <script lang="ts">
-  import { addDays, addMonths, fmtMonth, fmtTime, isoWeek, startOfDay, startOfWeek } from '../lib/time';
+  import { addDays, addMonths, fmtMonth, isoWeek, startOfDay, startOfWeek } from '../lib/time';
   import { api } from '../lib/api';
   import { appData } from '../lib/appdata.svelte';
   import { cart } from '../lib/cart.svelte';
-  import { session } from '../lib/session.svelte';
   import WeekGrid from '../components/WeekGrid.svelte';
   import MonthView from '../components/MonthView.svelte';
   import ListView from '../components/ListView.svelte';
@@ -18,13 +17,11 @@
   let bookings = $state<Booking[]>([]);
   let selectedBooking = $state<Booking | null>(null);
   let loadError = $state<string | null>(null);
-  let offlineSince = $state<string | null>(null);
   let selectedVehicle = $state(cart.items.length > 0 ? cart.vehicleId : 1);
 
   const weekStart = $derived(startOfWeek(anchor));
-  const features = $derived(appData.meta?.features ?? null);
   const activeVehicles = $derived((appData.meta?.vehicles ?? []).filter((v) => v.active));
-  const showVehicles = $derived(!!features?.vehicles && activeVehicles.length > 0);
+  const showVehicles = $derived(activeVehicles.length > 1);
 
   const rangeFrom = $derived.by(() => {
     if (view === 'week') return weekStart;
@@ -40,26 +37,6 @@
   let reloadFlag = $state(0);
   const refresh = () => (reloadFlag += 1);
 
-  function cacheBookings(key: string, value: Booking[]): void {
-    const prefix = `mtf.cache.bookings.v2:${session.user?.id ?? 'unknown'}:`;
-    const matching: { key: string; when: number }[] = [];
-    for (let index = 0; index < localStorage.length; index++) {
-      const candidate = localStorage.key(index);
-      if (!candidate?.startsWith(prefix) || candidate === key) continue;
-      try {
-        const stored = JSON.parse(localStorage.getItem(candidate) ?? 'null') as { when?: number } | null;
-        matching.push({ key: candidate, when: stored?.when ?? 0 });
-      } catch {
-        localStorage.removeItem(candidate);
-      }
-    }
-    matching
-      .sort((a, b) => b.when - a.when)
-      .slice(11)
-      .forEach((entry) => localStorage.removeItem(entry.key));
-    localStorage.setItem(key, JSON.stringify({ when: Date.now(), bookings: value }));
-  }
-
   $effect(() => {
     appData.load();
   });
@@ -70,7 +47,6 @@
     const to = rangeTo.toISOString();
     const vehicleQuery = showVehicles ? `&vehicle=${selectedVehicle}` : '';
     const controller = new AbortController();
-    const cacheKey = `mtf.cache.bookings.v2:${session.user?.id ?? 'unknown'}:${showVehicles ? selectedVehicle : 1}:${from}:${to}`;
     api<{ bookings: Booking[] }>(
       `/api/bookings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${vehicleQuery}`,
       { signal: controller.signal }
@@ -79,34 +55,9 @@
         if (controller.signal.aborted) return;
         bookings = res.bookings;
         loadError = null;
-        offlineSince = null;
-        if (appData.meta?.features.offlineCache) {
-          try {
-            cacheBookings(cacheKey, res.bookings);
-          } catch {
-            /* Speicher voll */
-          }
-        }
       })
       .catch((e) => {
         if (controller.signal.aborted) return;
-        // Offline-Cache (Beta-Feature): letzten Stand anzeigen
-        if (appData.meta?.features.offlineCache) {
-          try {
-            const cached = JSON.parse(localStorage.getItem(cacheKey) ?? 'null') as {
-              when: number;
-              bookings: Booking[];
-            } | null;
-            if (cached) {
-              bookings = cached.bookings;
-              offlineSince = fmtTime(cached.when);
-              loadError = null;
-              return;
-            }
-          } catch {
-            /* kein Cache */
-          }
-        }
         loadError = e instanceof Error ? e.message : 'Kalender konnte nicht geladen werden';
       });
     return () => controller.abort();
@@ -169,7 +120,6 @@
       </div>
     </div>
 
-    {#if offlineSince}<div class="note amber">📡 Offline – angezeigter Stand von {offlineSince} Uhr.</div>{/if}
     {#if loadError}<div class="note red">{loadError}</div>{/if}
 
     {#if view === 'week'}

@@ -15,7 +15,7 @@
   const cartVehicle = $derived(
     (appData.meta?.vehicles ?? []).find((v) => v.id === (cart.items.length > 0 ? cart.vehicleId : vehicleId))
   );
-  const showVehicle = $derived(!!appData.meta?.features.vehicles && (appData.meta?.vehicles.length ?? 0) > 1);
+  const showVehicle = $derived((appData.meta?.vehicles.length ?? 0) > 1);
 
   let open = $state(false);
   let busy = $state(false);

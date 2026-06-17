@@ -12,18 +12,16 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let editMode = $state(false);
-  let waitlistNote = $state<string | null>(null);
   let confirmation = $state<{ title: string; message: string; label: string; action: () => Promise<void> } | null>(null);
 
-  const features = $derived(appData.meta?.features ?? null);
-
-  // Rückfragen (Beta)
+  // Rückfragen
   let comments = $state<Comment[]>([]);
   let commentsEnabled = $state(false);
   let newComment = $state('');
   let commentBusy = $state(false);
 
-  const canComment = $derived(!!features?.comments && (booking.mine || session.isManager));
+  const canComment = $derived(booking.mine || session.isManager);
+  const showVehicle = $derived((appData.meta?.vehicles.length ?? 0) > 1);
 
   async function loadComments(): Promise<void> {
     if (!canComment) return;
@@ -51,15 +49,6 @@
       error = e instanceof Error ? e.message : 'Senden fehlgeschlagen';
     } finally {
       commentBusy = false;
-    }
-  }
-
-  async function joinWaitlist(): Promise<void> {
-    try {
-      await api('/api/waitlist', { body: { start: booking.start, end: booking.end, vehicleId: booking.vehicleId } });
-      waitlistNote = 'Du stehst auf der Warteliste und wirst bei einer Stornierung benachrichtigt.';
-    } catch (e) {
-      error = e instanceof Error ? e.message : 'Eintragen fehlgeschlagen';
     }
   }
 
@@ -116,7 +105,7 @@
   <p>
     {fmtRange(booking.start, booking.end)}<br />
     <span class="muted small">
-      Gebucht von {booking.mine ? 'dir' : booking.userName}{features?.vehicles ? ` · 🚒 ${booking.vehicleName}` : ''}
+      Gebucht von {booking.mine ? 'dir' : booking.userName}{showVehicle ? ` · 🚒 ${booking.vehicleName}` : ''}
     </span>
   </p>
   <p>
@@ -188,13 +177,6 @@
       <p class="small muted">
         Die Stornofrist ({deadlineH} Std. vor Beginn) ist abgelaufen – bitte wende dich an einen Admin.
       </p>
-    {/if}
-    {#if features?.waitlist && !booking.mine && active && Date.parse(booking.start) > Date.now()}
-      {#if waitlistNote}
-        <div class="note green">{waitlistNote}</div>
-      {:else}
-        <button onclick={joinWaitlist} disabled={busy}>🔔 Bei Stornierung benachrichtigen (Warteliste)</button>
-      {/if}
     {/if}
   {/if}
 

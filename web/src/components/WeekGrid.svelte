@@ -24,19 +24,28 @@
   const range = $derived(visibleHourRange(appData.meta?.rules, bookings, days));
   const hours = $derived(Array.from({ length: range.to - range.from }, (_, i) => range.from + i));
   const today = new Date();
-  const dragEnabled = $derived(!!appData.meta?.features.dragSelect);
 
-  // Drag-Auswahl (Beta): senkrecht über freie Stunden ziehen
+  // Drag-Auswahl: senkrecht über freie Stunden ziehen (Maus + Touch)
   let drag = $state<{ dayKey: number; from: number; to: number } | null>(null);
 
   function dragStart(day: Date, h: number, e: PointerEvent): void {
-    if (!dragEnabled) return;
     e.preventDefault();
     drag = { dayKey: day.getTime(), from: h, to: h };
   }
 
   function dragEnter(day: Date, h: number): void {
     if (drag && day.getTime() === drag.dayKey) drag = { ...drag, to: h };
+  }
+
+  // Auf Touch feuert pointerenter nicht auf Nachbarzellen (impliziter Pointer-Capture
+  // auf der Startzelle), daher die Zelle unter dem Finger per elementFromPoint bestimmen.
+  function dragMove(e: PointerEvent): void {
+    if (!drag) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const cell = el instanceof Element ? el.closest<HTMLElement>('.cell[data-h]') : null;
+    if (!cell || Number(cell.dataset.day) !== drag.dayKey) return;
+    const h = Number(cell.dataset.h);
+    if (Number.isFinite(h)) drag = { ...drag, to: h };
   }
 
   function dragCommit(): void {
@@ -49,20 +58,12 @@
         cart.toggleHour(day, h, vehicleId);
       }
     }
-    if (lo === hi && cart.has(day, lo)) {
-      // Einzelklick auf bereits gewählte Stunde = wieder entfernen
-    }
     drag = null;
   }
 
   function inDrag(day: Date, h: number): boolean {
     if (!drag || day.getTime() !== drag.dayKey) return false;
     return h >= Math.min(drag.from, drag.to) && h <= Math.max(drag.from, drag.to);
-  }
-
-  function cellClick(day: Date, h: number): void {
-    if (dragEnabled) return; // wird über pointerup abgewickelt
-    cart.toggleHour(day, h, vehicleId);
   }
 
   function blockStyle(topH: number, heightH: number): string {
@@ -72,7 +73,7 @@
   }
 </script>
 
-<svelte:window onpointerup={dragCommit} />
+<svelte:window onpointerup={dragCommit} onpointermove={dragMove} />
 
 <div class="wrap card">
   <div class="scroller">
@@ -96,9 +97,10 @@
               class={'cell ' + state}
               class:drag-sel={inDrag(day, h)}
               style={`top:${(h - range.from) * HOUR_H}px`}
+              data-h={h}
+              data-day={day.getTime()}
               disabled={state !== 'free'}
               aria-label={`${fmtDayHeading(day)} ${h}:00 Uhr auswählen`}
-              onclick={() => cellClick(day, h)}
               onpointerdown={(e) => state === 'free' && dragStart(day, h, e)}
               onpointerenter={() => dragEnter(day, h)}
             ></button>
@@ -144,7 +146,7 @@
     <span><i class="sw pending"></i> Wartet auf Freigabe</span>
     <span><i class="sw cart"></i> Im Warenkorb</span>
     <span><i class="sw blackout"></i> Gesperrt</span>
-    <span class="muted tip">Tipp: freie Stunden anklicken, um sie in den Korb zu legen</span>
+    <span class="muted tip">Tipp: freie Stunden antippen oder mehrere am Stück aufziehen</span>
   </div>
 </div>
 
@@ -190,6 +192,8 @@
     background: transparent;
     padding: 0;
     cursor: pointer;
+    /* Senkrechtes Ziehen wird zur Auswahl genutzt; waagerechtes Wischen scrollt die Woche. */
+    touch-action: pan-x;
   }
   .cell:hover { background: var(--accent-soft); }
   .cell.drag-sel { background: var(--accent-soft); outline: 1.5px dashed var(--accent); outline-offset: -2px; }

@@ -1,25 +1,16 @@
 <script lang="ts">
   import { api, API_BASE } from '../../lib/api';
   import { session } from '../../lib/session.svelte';
-  import { appData } from '../../lib/appdata.svelte';
-  import { fmtRange, WEEKDAYS_SHORT } from '../../lib/time';
+  import { WEEKDAYS_SHORT } from '../../lib/time';
   import type { Stats } from '../../lib/types';
 
   let stats = $state<Stats | null>(null);
   let error = $state<string | null>(null);
-  let logs = $state<Record<string, unknown>[]>([]);
-
-  const features = $derived(appData.meta?.features ?? null);
 
   $effect(() => {
     api<Stats>('/api/admin/stats')
       .then((s) => (stats = s))
       .catch((e) => (error = e instanceof Error ? e.message : 'Laden fehlgeschlagen'));
-    if (appData.meta?.features.tripLog) {
-      api<{ logs: Record<string, unknown>[] }>('/api/admin/triplogs')
-        .then((r) => (logs = r.logs))
-        .catch(() => undefined);
-    }
   });
 
   const maxMonthHours = $derived(Math.max(1, ...(stats?.months ?? []).map((m) => m.hours)));
@@ -100,31 +91,11 @@
       {/each}
     </div>
 
-    {#if features?.tripLog}
-      <div class="card">
-        <h2>📓 Letzte Fahrtenbuch-Einträge</h2>
-        {#if logs.length === 0}
-          <p class="small muted">Noch keine Einträge.</p>
-        {/if}
-        {#each logs as log (log.id)}
-          <div class="line small">
-            <strong>{log.purpose}</strong> · {log.user_name} · {fmtRange(String(log.start_ts), String(log.end_ts))}<br />
-            <span class="muted">
-              {log.km_start != null ? `${log.km_start} km` : '–'} → {log.km_end != null ? `${log.km_end} km` : '–'}
-              {log.km_start != null && log.km_end != null ? ` (${Number(log.km_end) - Number(log.km_start)} km)` : ''}
-              {log.note ? ` · ${log.note}` : ''}
-            </span>
-          </div>
-        {/each}
-      </div>
-    {/if}
   </div>
 
-  {#if features?.csvExport}
-    <div class="export-row">
-      <button onclick={downloadCsv}>📄 Alle Buchungen als CSV herunterladen</button>
-    </div>
-  {/if}
+  <div class="export-row">
+    <button onclick={downloadCsv}>📄 Alle Buchungen als CSV herunterladen</button>
+  </div>
 {:else if !error}
   <p class="muted">Lade Statistik…</p>
 {/if}
@@ -158,11 +129,6 @@
     min-width: 2px;
   }
   .value { width: 110px; text-align: right; font-size: 12px; color: var(--muted); flex: none; }
-  .line {
-    border-top: 1px solid var(--border);
-    padding: 7px 0;
-  }
-  .line:first-of-type { border-top: none; }
   .export-row { margin-top: 12px; }
   .note { margin-bottom: 10px; }
 </style>

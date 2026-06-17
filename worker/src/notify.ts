@@ -1,6 +1,5 @@
 import type { Env } from './types';
 import { fmtRange } from './rules';
-import { getFeatures } from './db';
 import { emailLayout, sendEmail } from './email';
 import { escapeHtml } from './html';
 import { sendWebPush, type PushSub } from './webpush';
@@ -127,18 +126,21 @@ export async function notifyUserDecision(
   const body = summarizeItems(items, 4);
   await pushToUsers(env, [user.id], { title, body, url: `${env.SITE_URL}#/meine-buchungen`, tag: `decision-${purpose}` });
   await telegramToUser(env, user.id, `${approved ? '✅' : '❌'} <b>${escapeHtml(title)}</b>\n${escapeHtml(body)}`);
-  await sendEmail(
-    env,
-    user.email,
-    title,
-    emailLayout(
+  if (await emailEnabled(env, user.id)) {
+    await sendEmail(
+      env,
+      user.email,
       title,
-      `<p>Hallo ${escapeHtml(user.name)},</p>
-       <p>deine Buchung „${escapeHtml(purpose)}" wurde von einem Admin ${approved ? 'bestätigt' : 'abgelehnt'}:</p>
-       <pre style="font-family:inherit;white-space:pre-wrap;">${escapeHtml(body)}</pre>
-       <p><a href="${env.SITE_URL}#/meine-buchungen" style="color:#a32d2d;">Zu deinen Buchungen</a></p>`
-    )
-  );
+      emailLayout(
+        title,
+        `<p>Hallo ${escapeHtml(user.name)},</p>
+         <p>deine Buchung „${escapeHtml(purpose)}" wurde von einem Admin ${approved ? 'bestätigt' : 'abgelehnt'}:</p>
+         <pre style="font-family:inherit;white-space:pre-wrap;">${escapeHtml(body)}</pre>
+         <p><a href="${env.SITE_URL}#/meine-buchungen" style="color:#a32d2d;">Zu deinen Buchungen</a></p>`,
+        mailFooter(env)
+      )
+    );
+  }
 }
 
 export async function notifyManagersCancellation(
@@ -167,82 +169,45 @@ export async function notifyUserChangedByManager(
   const title = `Buchung geändert: ${purpose}`;
   await pushToUsers(env, [user.id], { title, body: detail, url: `${env.SITE_URL}#/meine-buchungen` });
   await telegramToUser(env, user.id, `✏️ <b>${escapeHtml(title)}</b>\n${escapeHtml(detail)}`);
-  await sendEmail(
-    env,
-    user.email,
-    title,
-    emailLayout(
+  if (await emailEnabled(env, user.id)) {
+    await sendEmail(
+      env,
+      user.email,
       title,
-      `<p>Hallo ${escapeHtml(user.name)},</p>
-       <p>ein Admin hat deine Buchung „${escapeHtml(purpose)}" geändert:</p>
-       <p>${escapeHtml(detail)}</p>
-       <p><a href="${env.SITE_URL}#/meine-buchungen" style="color:#a32d2d;">Zu deinen Buchungen</a></p>`
-    )
-  );
+      emailLayout(
+        title,
+        `<p>Hallo ${escapeHtml(user.name)},</p>
+         <p>ein Admin hat deine Buchung „${escapeHtml(purpose)}" geändert:</p>
+         <p>${escapeHtml(detail)}</p>
+         <p><a href="${env.SITE_URL}#/meine-buchungen" style="color:#a32d2d;">Zu deinen Buchungen</a></p>`,
+        mailFooter(env)
+      )
+    );
+  }
 }
 
-/**
- * Schickt eine Telegram-Nachricht an eine einzelne Person, sofern verknüpft.
- * Admins immer, Mitglieder nur bei aktivem Beta-Feature „Telegram für Mitglieder".
- */
+/** Footer-Hinweis für Bescheid-Mails: Mail-Benachrichtigungen sind abschaltbar. */
+function mailFooter(env: Env): string {
+  return `Diese Benachrichtigungen kannst du in der MTF-Buchung unter <a href="${env.SITE_URL}#/hilfe" style="color:#a32d2d;">Hilfe</a> abschalten.`;
+}
+
+/** Möchte die Person Benachrichtigungs-Mails? (Auth-Mails laufen NICHT über diesen Pfad.) */
+async function emailEnabled(env: Env, userId: number): Promise<boolean> {
+  const row = await env.DB.prepare('SELECT email_notifications FROM users WHERE id = ?')
+    .bind(userId)
+    .first<{ email_notifications: number }>();
+  return (row?.email_notifications ?? 1) === 1;
+}
+
+/** Schickt eine Telegram-Nachricht an eine einzelne Person, sofern verknüpft. */
 async function telegramToUser(env: Env, userId: number, text: string): Promise<void> {
   const row = await env.DB.prepare(
-    'SELECT t.chat_id, u.role FROM telegram_links t JOIN users u ON u.id = t.user_id WHERE t.user_id = ? AND u.disabled = 0'
+    'SELECT t.chat_id FROM telegram_links t JOIN users u ON u.id = t.user_id WHERE t.user_id = ? AND u.disabled = 0'
   )
     .bind(userId)
-    .first<{ chat_id: string; role: string }>();
+    .first<{ chat_id: string }>();
   if (!row) return;
-  if (row.role !== 'manager' && !(await getFeatures(env.DB)).memberTelegram) return;
   await tg(env, 'sendMessage', { chat_id: row.chat_id, text, parse_mode: 'HTML' });
-}
-
-export async function notifyReminder(
-  env: Env,
-  user: { id: number; email: string; name: string },
-  purpose: string,
-  vehicleName: string,
-  startIso: string,
-  endIso: string
-): Promise<void> {
-  const title = `Erinnerung: ${purpose}`;
-  const body = `${vehicleName} · ${fmtRange(startIso, endIso)}`;
-  await pushToUsers(env, [user.id], { title, body, url: `${env.SITE_URL}#/meine-buchungen`, tag: `reminder-${startIso}` });
-  await telegramToUser(env, user.id, `⏰ <b>${escapeHtml(title)}</b>\n${escapeHtml(body)}`);
-  await sendEmail(
-    env,
-    user.email,
-    title,
-    emailLayout(title, `<p>Hallo ${escapeHtml(user.name)},</p><p>deine Fahrt steht bevor:</p><p><strong>${escapeHtml(body)}</strong></p>`)
-  );
-}
-
-export async function notifyWaitlistFree(
-  env: Env,
-  user: { id: number; email: string; name: string },
-  vehicleName: string,
-  startIso: string,
-  endIso: string,
-  offeredUntil: string
-): Promise<void> {
-  const title = 'Wartelisten-Angebot verfügbar';
-  const until = new Intl.DateTimeFormat('de-DE', {
-    timeZone: 'Europe/Berlin',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(offeredUntil));
-  const body = `${vehicleName} · ${fmtRange(startIso, endIso)} ist bis ${until} Uhr für dich reserviert.`;
-  await pushToUsers(env, [user.id], { title, body, url: `${env.SITE_URL}#/kalender` });
-  await telegramToUser(env, user.id, `🔔 <b>${escapeHtml(title)}</b>\n${escapeHtml(body)}\n<a href="${env.SITE_URL}#/kalender">Jetzt buchen →</a>`);
-  await sendEmail(
-    env,
-    user.email,
-    title,
-    emailLayout(
-      title,
-      `<p>Hallo ${escapeHtml(user.name)},</p><p>${escapeHtml(body)}</p>
-       <p><a href="${env.SITE_URL}#/kalender" style="color:#a32d2d;">Jetzt buchen →</a></p>`
-    )
-  );
 }
 
 export async function notifyCommentToManagers(
@@ -284,14 +249,17 @@ export async function notifyCommentToUser(
   const title = `Antwort zu „${purpose}"`;
   await pushToUsers(env, [user.id], { title, body: `${fromName}: ${text.slice(0, 120)}`, url: `${env.SITE_URL}#/meine-buchungen` });
   await telegramToUser(env, user.id, `💬 <b>${escapeHtml(title)}</b>\n${escapeHtml(fromName)}: ${escapeHtml(text)}`);
-  await sendEmail(
-    env,
-    user.email,
-    title,
-    emailLayout(
+  if (await emailEnabled(env, user.id)) {
+    await sendEmail(
+      env,
+      user.email,
       title,
-      `<p>Hallo ${escapeHtml(user.name)},</p><p>${escapeHtml(fromName)} schreibt zu deiner Buchung „${escapeHtml(purpose)}":</p>
-       <blockquote style="border-left:3px solid #a32d2d;margin:0;padding:4px 12px;">${escapeHtml(text)}</blockquote>`
-    )
-  );
+      emailLayout(
+        title,
+        `<p>Hallo ${escapeHtml(user.name)},</p><p>${escapeHtml(fromName)} schreibt zu deiner Buchung „${escapeHtml(purpose)}":</p>
+         <blockquote style="border-left:3px solid #a32d2d;margin:0;padding:4px 12px;">${escapeHtml(text)}</blockquote>`,
+        mailFooter(env)
+      )
+    );
+  }
 }

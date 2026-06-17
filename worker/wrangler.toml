@@ -3,10 +3,6 @@ name = "mtf-api"
 main = "src/index.ts"
 compatibility_date = "2025-10-01"
 
-# Cron für Erinnerungen vor Fahrtbeginn (Beta-Feature, prüft alle 15 Minuten)
-[triggers]
-crons = ["*/15 * * * *"]
-
 [[d1_databases]]
 binding = "DB"
 database_name = "mtf-db"

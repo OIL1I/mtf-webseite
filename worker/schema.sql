@@ -7,8 +7,8 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'manager')),
   disabled INTEGER NOT NULL DEFAULT 0,
   password_hash TEXT,
-  ics_token TEXT,
   license_classes TEXT NOT NULL DEFAULT '[]',
+  email_notifications INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -54,7 +54,6 @@ CREATE TABLE IF NOT EXISTS bookings (
   series_key TEXT,
   decided_by INTEGER,
   cancelled_at TEXT,
-  reminded INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_bookings_range ON bookings (start_ts, end_ts);
@@ -116,68 +115,6 @@ CREATE TABLE IF NOT EXISTS vehicles (
 );
 INSERT OR IGNORE INTO vehicles (id, name) VALUES (1, 'MTF');
 
-CREATE TABLE IF NOT EXISTS waitlist (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id),
-  vehicle_id INTEGER NOT NULL DEFAULT 1 REFERENCES vehicles(id),
-  start_ts TEXT NOT NULL,
-  end_ts TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting', 'offered', 'claimed', 'expired')),
-  offered_at TEXT,
-  offered_until TEXT,
-  offer_token TEXT,
-  claimed_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-CREATE INDEX IF NOT EXISTS idx_waitlist_range ON waitlist (vehicle_id, status, start_ts, end_ts);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_waitlist_unique_active
-  ON waitlist (user_id, vehicle_id, start_ts, end_ts)
-  WHERE status IN ('waiting', 'offered');
-
-CREATE TRIGGER IF NOT EXISTS waitlist_guard_offer
-BEFORE UPDATE OF status ON waitlist
-WHEN NEW.status = 'offered'
-BEGIN
-  SELECT CASE WHEN EXISTS (
-    SELECT 1
-    FROM waitlist w
-    WHERE w.id != NEW.id
-      AND w.vehicle_id = NEW.vehicle_id
-      AND w.status = 'offered'
-      AND julianday(w.offered_until) > julianday('now')
-      AND julianday(w.start_ts) < julianday(NEW.end_ts)
-      AND julianday(w.end_ts) > julianday(NEW.start_ts)
-  ) THEN RAISE(ABORT, 'waitlist_offer_exists') END;
-END;
-
-CREATE TRIGGER IF NOT EXISTS waitlist_status_insert
-BEFORE INSERT ON waitlist
-WHEN NEW.status != 'waiting'
-BEGIN
-  SELECT RAISE(ABORT, 'invalid_waitlist_transition');
-END;
-
-CREATE TRIGGER IF NOT EXISTS waitlist_status_transition
-BEFORE UPDATE OF status ON waitlist
-WHEN NEW.status != OLD.status
-  AND NOT (
-    (OLD.status = 'waiting' AND NEW.status IN ('offered', 'expired'))
-    OR (OLD.status = 'offered' AND NEW.status IN ('claimed', 'expired'))
-  )
-BEGIN
-  SELECT RAISE(ABORT, 'invalid_waitlist_transition');
-END;
-
-CREATE TABLE IF NOT EXISTS trip_logs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),
-  user_id INTEGER NOT NULL REFERENCES users(id),
-  km_start INTEGER,
-  km_end INTEGER,
-  note TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-
 CREATE TABLE IF NOT EXISTS comments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   group_id INTEGER NOT NULL REFERENCES booking_groups(id),
@@ -202,22 +139,10 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_key ON login_attempts (key, created_at);
 
--- Beta-Feature-Schalter (alle standardmäßig aus)
+-- Sicherheits-Schalter (standardmäßig aus): Login-Rate-Limit und globaler Passwort-Login
 INSERT OR IGNORE INTO settings (key, value) VALUES ('features', json('{
-  "reminders": false,
-  "reminderLeadHours": 2,
-  "memberTelegram": false,
-  "tripLog": false,
-  "waitlist": false,
-  "vehicles": false,
-  "stats": false,
-  "dragSelect": false,
-  "ics": false,
-  "comments": false,
   "rateLimit": false,
-  "auditLog": false,
-  "csvExport": false,
-  "offlineCache": false
+  "passwords": false
 }'));
 
 -- Standard-Regeln (werden nur eingefügt, wenn noch keine existieren)
@@ -245,23 +170,11 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('rules', json('{
 }'));
 
 -- Atomare Datenintegrität: aktive Buchungen dürfen sich je Fahrzeug auch unter
--- parallelen Worker-Requests nicht überschneiden. Der konfigurierte Puffer gilt
--- ebenso wie ein aktives Wartelisten-Angebot für eine andere Person.
+-- parallelen Worker-Requests nicht überschneiden. Der konfigurierte Puffer gilt mit.
 CREATE TRIGGER IF NOT EXISTS bookings_guard_insert
 BEFORE INSERT ON bookings
 WHEN NEW.status IN ('confirmed', 'pending')
 BEGIN
-  SELECT CASE WHEN EXISTS (
-    SELECT 1
-    FROM waitlist w
-    WHERE w.vehicle_id = NEW.vehicle_id
-      AND w.status = 'offered'
-      AND julianday(w.offered_until) > julianday('now')
-      AND w.user_id != NEW.user_id
-      AND julianday(w.start_ts) < julianday(NEW.end_ts)
-      AND julianday(w.end_ts) > julianday(NEW.start_ts)
-  ) THEN RAISE(ABORT, 'booking_reserved') END;
-
   SELECT CASE WHEN EXISTS (
     SELECT 1
     FROM bookings b
@@ -288,17 +201,6 @@ WHEN NEW.status IN ('confirmed', 'pending')
 BEGIN
   SELECT CASE WHEN EXISTS (
     SELECT 1
-    FROM waitlist w
-    WHERE w.vehicle_id = NEW.vehicle_id
-      AND w.status = 'offered'
-      AND julianday(w.offered_until) > julianday('now')
-      AND w.user_id != NEW.user_id
-      AND julianday(w.start_ts) < julianday(NEW.end_ts)
-      AND julianday(w.end_ts) > julianday(NEW.start_ts)
-  ) THEN RAISE(ABORT, 'booking_reserved') END;
-
-  SELECT CASE WHEN EXISTS (
-    SELECT 1
     FROM bookings b
     WHERE b.id != NEW.id
       AND b.vehicle_id = NEW.vehicle_id
@@ -322,3 +224,22 @@ WHEN NEW.status != OLD.status
 BEGIN
   SELECT RAISE(ABORT, 'invalid_booking_transition');
 END;
+
+-- Migrations-Baseline: schema.sql ist der vollständige Aktuellstand. Damit eine FRISCH per
+-- schema.sql aufgesetzte DB nicht anschließend die historischen Migrationen (die u.a. die
+-- längst entfernte waitlist-Tabelle voraussetzen) erneut ausführt, werden sie hier als bereits
+-- angewandt markiert. `wrangler d1 migrations apply` ist danach ein No-Op; künftige Migrationen
+-- (0008+) greifen normal. Auf bestehenden DBs ist dieser Block dank IF NOT EXISTS / OR IGNORE wirkungslos.
+CREATE TABLE IF NOT EXISTS d1_migrations (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT UNIQUE,
+  applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+INSERT OR IGNORE INTO d1_migrations (name) VALUES
+  ('0001_booking_integrity.sql'),
+  ('0002_waitlist_offer_guard.sql'),
+  ('0003_password_reset_expiry.sql'),
+  ('0004_status_transition_guards.sql'),
+  ('0005_blackout_intervals.sql'),
+  ('0006_drop_beta_features.sql'),
+  ('0007_passwords_optional_email_pref.sql');

@@ -3,7 +3,8 @@
     checked = $bindable(),
     label = '',
     disabled = false,
-  }: { checked: boolean; label?: string; disabled?: boolean } = $props();
+    onchange,
+  }: { checked: boolean; label?: string; disabled?: boolean; onchange?: (value: boolean) => void } = $props();
 </script>
 
 <button
@@ -13,7 +14,7 @@
   aria-checked={checked}
   aria-label={label}
   {disabled}
-  onclick={() => (checked = !checked)}
+  onclick={() => { checked = !checked; onchange?.(checked); }}
 >
   <span class="knob"></span>
 </button>

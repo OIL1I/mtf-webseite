@@ -36,20 +36,8 @@ export async function getBlackouts(db: D1Database): Promise<Blackout[]> {
 }
 
 const DEFAULT_FEATURES: Features = {
-  reminders: false,
-  reminderLeadHours: 2,
-  memberTelegram: false,
-  tripLog: false,
-  waitlist: false,
-  vehicles: false,
-  stats: false,
-  dragSelect: false,
-  ics: false,
-  comments: false,
   rateLimit: false,
-  auditLog: false,
-  csvExport: false,
-  offlineCache: false,
+  passwords: false,
 };
 
 export async function getFeatures(db: D1Database): Promise<Features> {
@@ -69,11 +57,9 @@ export async function getVehicles(db: D1Database): Promise<Vehicle[]> {
   return results;
 }
 
-/** Schreibt einen Audit-Eintrag, sofern das Audit-Log-Feature aktiv ist. */
+/** Schreibt einen Audit-Eintrag für alle Verwaltungs-Aktionen. */
 export async function audit(db: D1Database, actor: string, action: string, detail: string): Promise<void> {
   try {
-    const features = await getFeatures(db);
-    if (!features.auditLog) return;
     await db.prepare('INSERT INTO audit_log (actor, action, detail) VALUES (?, ?, ?)').bind(actor, action, detail).run();
   } catch (err) {
     console.error('Audit-Log fehlgeschlagen', err);

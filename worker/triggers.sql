@@ -1,6 +1,7 @@
 DROP TRIGGER IF EXISTS bookings_guard_insert;
 DROP TRIGGER IF EXISTS bookings_guard_update;
 DROP TRIGGER IF EXISTS bookings_status_transition;
+-- Wartelisten-Trigger gibt es seit Migration 0006 nicht mehr; defensiv mit abräumen.
 DROP TRIGGER IF EXISTS waitlist_guard_offer;
 DROP TRIGGER IF EXISTS waitlist_status_insert;
 DROP TRIGGER IF EXISTS waitlist_status_transition;
@@ -9,17 +10,6 @@ CREATE TRIGGER bookings_guard_insert
 BEFORE INSERT ON bookings
 WHEN NEW.status IN ('confirmed', 'pending')
 BEGIN
-  SELECT CASE WHEN EXISTS (
-    SELECT 1
-    FROM waitlist w
-    WHERE w.vehicle_id = NEW.vehicle_id
-      AND w.status = 'offered'
-      AND julianday(w.offered_until) > julianday('now')
-      AND w.user_id != NEW.user_id
-      AND julianday(w.start_ts) < julianday(NEW.end_ts)
-      AND julianday(w.end_ts) > julianday(NEW.start_ts)
-  ) THEN RAISE(ABORT, 'booking_reserved') END;
-
   SELECT CASE WHEN EXISTS (
     SELECT 1
     FROM bookings b
@@ -46,17 +36,6 @@ WHEN NEW.status IN ('confirmed', 'pending')
 BEGIN
   SELECT CASE WHEN EXISTS (
     SELECT 1
-    FROM waitlist w
-    WHERE w.vehicle_id = NEW.vehicle_id
-      AND w.status = 'offered'
-      AND julianday(w.offered_until) > julianday('now')
-      AND w.user_id != NEW.user_id
-      AND julianday(w.start_ts) < julianday(NEW.end_ts)
-      AND julianday(w.end_ts) > julianday(NEW.start_ts)
-  ) THEN RAISE(ABORT, 'booking_reserved') END;
-
-  SELECT CASE WHEN EXISTS (
-    SELECT 1
     FROM bookings b
     WHERE b.id != NEW.id
       AND b.vehicle_id = NEW.vehicle_id
@@ -79,38 +58,4 @@ WHEN NEW.status != OLD.status
   )
 BEGIN
   SELECT RAISE(ABORT, 'invalid_booking_transition');
-END;
-
-CREATE TRIGGER waitlist_guard_offer
-BEFORE UPDATE OF status ON waitlist
-WHEN NEW.status = 'offered'
-BEGIN
-  SELECT CASE WHEN EXISTS (
-    SELECT 1
-    FROM waitlist w
-    WHERE w.id != NEW.id
-      AND w.vehicle_id = NEW.vehicle_id
-      AND w.status = 'offered'
-      AND julianday(w.offered_until) > julianday('now')
-      AND julianday(w.start_ts) < julianday(NEW.end_ts)
-      AND julianday(w.end_ts) > julianday(NEW.start_ts)
-  ) THEN RAISE(ABORT, 'waitlist_offer_exists') END;
-END;
-
-CREATE TRIGGER waitlist_status_insert
-BEFORE INSERT ON waitlist
-WHEN NEW.status != 'waiting'
-BEGIN
-  SELECT RAISE(ABORT, 'invalid_waitlist_transition');
-END;
-
-CREATE TRIGGER waitlist_status_transition
-BEFORE UPDATE OF status ON waitlist
-WHEN NEW.status != OLD.status
-  AND NOT (
-    (OLD.status = 'waiting' AND NEW.status IN ('offered', 'expired'))
-    OR (OLD.status = 'offered' AND NEW.status IN ('claimed', 'expired'))
-  )
-BEGIN
-  SELECT RAISE(ABORT, 'invalid_waitlist_transition');
 END;
