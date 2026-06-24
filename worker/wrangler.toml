@@ -11,10 +11,10 @@ database_id = "54b719c7-cc31-4e5d-84c8-43a9bc8889da"
 
 [vars]
 # Origin der GitHub-Pages-Seite, z.B. "https://DEINNAME.github.io"
-SITE_ORIGIN = "https://buchungen.oil1i.de"
+SITE_ORIGIN = "https://mtf.ff-horst-eiberg.de"
 # Vollständige URL der Seite inkl. Pfad, z.B. "https://DEINNAME.github.io/mtf-webseite/"
-SITE_URL = "https://buchungen.oil1i.de"
-MAIL_FROM = "MTF-Buchung <mtf@oil1i.de>"
+SITE_URL = "https://mtf.ff-horst-eiberg.de"
+MAIL_FROM = "MTF-Buchung <mtf@ff-horst-eiberg.de>"
 TELEGRAM_BOT_USERNAME = "MtfHorstEibergBot"
 VAPID_SUBJECT = "mailto:buchungen.oil1i.de-m.repaint356@passmail.net"
 VAPID_PUBLIC_KEY = "BP-AwXm0i9vpPQKgb5NuSJH6TQ49fvQvxF-He44q2g8GrtIVgzTw9KXzzGaWgm_YyGpmvUT6hUmdUejBmfRCjYg"
